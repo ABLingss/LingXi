@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (contains user preferences)
+config.ini
+
+# Saved stock data
+*.json
+!package.json
+
+# PyInstaller
+*.exe
+StockJSONClipper
+StockJSONClipper.app
