@@ -317,8 +317,9 @@ class StockClipper:
                     raise
 
     def _save_to_file(self, code: str, name: str, json_str: str) -> str:
-        """Save JSON to a local file in the current directory.
+        """Save JSON to a local file.
 
+        Uses save_directory from config if set, otherwise current directory.
         File naming: {code}_{name}_{date}.json
 
         Args:
@@ -333,8 +334,14 @@ class StockClipper:
         # Sanitize filename
         safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "")
         filename = f"{code}_{safe_name}_{date_str}.json"
-        filepath = os.path.join(os.getcwd(), filename)
 
+        save_dir = self._config.get("save_directory", "")
+        if save_dir and os.path.isdir(save_dir):
+            filepath = os.path.join(save_dir, filename)
+        else:
+            filepath = os.path.join(os.getcwd(), filename)
+
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(json_str)
 

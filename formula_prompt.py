@@ -1,77 +1,48 @@
 """
-formula_prompt.py — TDX formula → AI prompt converter for Stock JSON Clipper.
+formula_prompt.py — TDX formula → AI prompt converter for Stock JSON Clipper V2.0.
 
-Extracts key indicators and conditions from TDX (通达信) formula text
-using regex, then generates a natural-language Chinese prompt that includes
-the current stock's actual indicator values. The user pastes this prompt
-into an AI (ChatGPT/DeepSeek) for analysis.
+Generates professional A-share technical analysis prompts with:
+  - Multi-timeframe resonance analysis (日/周/月)
+  - Trend, support/resistance, volume-price, momentum frameworks
+  - Formula condition verification (逐条判断)
+  - Backtesting & parameter optimization suggestions
+  - Risk/reward assessment
 
-Supported TDX patterns:
-  - CROSS(A, B)      → Golden/death cross
-  - MA(C, N)         → Moving average
-  - MACD.DIF/DEA     → MACD components
-  - RSI(N)           → RSI threshold
-  - BOLL.UPPER/LOWER → Bollinger Bands
-  - Comparison ops   → >, <, >=, <=, =
-  - Logical ops      → AND, OR, &&
-  - Numeric constants
+The user pastes the generated prompt into ChatGPT/DeepSeek/Claude for analysis.
 """
 
 import re
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# --- Pattern recognizers ---
-# CROSS uses a specialized extractor (see _extract_cross) to handle
-# nested parentheses in arguments like CROSS(MA(C,5), MA(C,20))
+# ============================================================
+# Pattern recognizers
+# ============================================================
 MA_PATTERN = re.compile(r"MA\s*\(\s*C\s*,\s*(\d+)\s*\)", re.IGNORECASE)
 MACD_PATTERN = re.compile(r"MACD\s*\.\s*(DIF|DEA|MACD)\b", re.IGNORECASE)
 RSI_PATTERN = re.compile(r"RSI\s*\(\s*(\d+)\s*\)", re.IGNORECASE)
 BOLL_PATTERN = re.compile(r"BOLL\s*\.\s*(UPPER|LOWER|MID)\b", re.IGNORECASE)
+CROSS_PATTERN = re.compile(r"CROSS\s*\(", re.IGNORECASE)
 COMPARE_PATTERN = re.compile(
     r"([A-Za-z_.0-9()]+)\s*(>=?|<=?|==?|!=)\s*([A-Za-z_.0-9()]+)"
 )
-NUMERIC_PATTERN = re.compile(r"[-+]?\d*\.?\d+")
 KEYWORD_PATTERN = re.compile(
     r"\b(SMA|EMA|VOL|CLOSE|OPEN|HIGH|LOW|AMOUNT|REF|HHV|LLV|BARSLAST|"
-    r"EVERY|EXIST|COUNT|IF|THEN|BUY|SELL|FILTER)\b",
+    r"EVERY|EXIST|COUNT|IF|THEN|BUY|SELL|FILTER|ABS|MAX|MIN|SUM|"
+    r"STD|AVEDEV|SLOPE|FORCAST|DEA|DIF)\b",
     re.IGNORECASE,
 )
 
-# English → Chinese indicator name mapping
-INDICATOR_NAMES_CN = {
-    "MA": "均线",
-    "MACD": "MACD",
-    "MACD.DIF": "MACD快线(DIF)",
-    "MACD.DEA": "MACD慢线(DEA)",
-    "MACD.MACD": "MACD柱(BAR)",
-    "RSI": "RSI相对强弱",
-    "BOLL": "布林带",
-    "BOLL.UPPER": "布林上轨",
-    "BOLL.MID": "布林中轨",
-    "BOLL.LOWER": "布林下轨",
-    "VOL": "成交量",
-    "CLOSE": "收盘价",
-    "OPEN": "开盘价",
-    "HIGH": "最高价",
-    "LOW": "最低价",
-}
+# Period labels for display
+PERIOD_LABELS = {"daily": "日线", "weekly": "周线", "monthly": "月线"}
 
 
+# ============================================================
+# Formula parser
+# ============================================================
 def _find_cross_args(text: str, start: int) -> tuple:
-    """Extract the two arguments of a CROSS() call using paren counting.
-
-    Handles nested function calls like CROSS(MA(C,5), MA(C,20)).
-
-    Args:
-        text: The formula text.
-        start: Position of the opening paren of CROSS(.
-
-    Returns:
-        (arg1, arg2, end_pos) or (None, None, -1) on failure.
-    """
-    # start points to '(' — find matching ')'
+    """Extract the two arguments of a CROSS() call using paren counting."""
     depth = 0
     end = -1
     for i in range(start, len(text)):
@@ -82,13 +53,10 @@ def _find_cross_args(text: str, start: int) -> tuple:
             if depth == 0:
                 end = i
                 break
-
     if end < 0:
         return (None, None, -1)
 
     inner = text[start + 1:end]
-
-    # Split inner on the top-level comma (not inside nested parens)
     split_pos = -1
     depth = 0
     for i, ch in enumerate(inner):
@@ -99,7 +67,6 @@ def _find_cross_args(text: str, start: int) -> tuple:
         elif ch == ',' and depth == 0:
             split_pos = i
             break
-
     if split_pos < 0:
         return (None, None, -1)
 
@@ -107,140 +74,290 @@ def _find_cross_args(text: str, start: int) -> tuple:
 
 
 def extract_indicators(formula: str) -> List[Dict[str, str]]:
-    """Extract indicator references from TDX formula text.
-
-    Args:
-        formula: Raw TDX formula text.
-
-    Returns:
-        List of dicts with 'type' and 'detail' keys.
-    """
+    """Extract indicator references from TDX formula text."""
     found: List[Dict[str, str]] = []
 
-    # CROSS patterns — use paren-counting extractor for nested args
-    cross_re = re.compile(r"CROSS\s*\(", re.IGNORECASE)
-    for m in cross_re.finditer(formula):
+    # CROSS
+    for m in CROSS_PATTERN.finditer(formula):
         a, b, end = _find_cross_args(formula, m.end() - 1)
         if a and b:
-            found.append({"type": "CROSS", "detail": f"{a} 穿越 {b}"})
+            found.append({"type": "金叉/死叉", "detail": f"{a} 与 {b} 交叉"})
 
-    # MA patterns
+    # MA
     for m in MA_PATTERN.finditer(formula):
-        n = m.group(1)
-        found.append({"type": "MA", "detail": f"MA({n})"})
+        found.append({"type": "均线", "detail": f"MA(C,{m.group(1)})"})
 
-    # MACD patterns
+    # MACD
     for m in MACD_PATTERN.finditer(formula):
-        comp = m.group(1).upper()
-        found.append({"type": "MACD", "detail": f"MACD.{comp}"})
+        found.append({"type": "MACD", "detail": f"MACD.{m.group(1).upper()}"})
 
-    # RSI patterns
+    # RSI
     for m in RSI_PATTERN.finditer(formula):
-        n = m.group(1)
-        found.append({"type": "RSI", "detail": f"RSI({n})"})
+        found.append({"type": "RSI", "detail": f"RSI({m.group(1)})"})
 
-    # BOLL patterns
+    # BOLL
     for m in BOLL_PATTERN.finditer(formula):
-        band = m.group(1).upper()
-        found.append({"type": "BOLL", "detail": f"BOLL.{band}"})
+        found.append({"type": "布林带", "detail": f"BOLL.{m.group(1).upper()}"})
 
-    # Comparison patterns
+    # Comparisons
     for m in COMPARE_PATTERN.finditer(formula):
-        left = m.group(1).strip()
-        op = m.group(2).strip()
-        right = m.group(3).strip()
-        # Skip if it's a CROSS or already captured pattern internals
+        left, op, right = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
         if "CROSS" in left.upper() or "CROSS" in right.upper():
             continue
-        found.append({"type": "CONDITION", "detail": f"{left} {op} {right}"})
+        op_cn = {
+            ">": "大于", "<": "小于", ">=": "大于等于",
+            "<=": "小于等于", "=": "等于", "==": "等于", "!=": "不等于",
+        }.get(op, op)
+        found.append({"type": "条件判断", "detail": f"{left} {op_cn} {right}"})
 
     # Keywords
+    seen = {f["detail"] for f in found}
     for m in KEYWORD_PATTERN.finditer(formula):
         kw = m.group(1).upper()
-        found.append({"type": "KEYWORD", "detail": kw})
+        if kw not in seen:
+            found.append({"type": "函数", "detail": kw})
+            seen.add(kw)
 
     return found
 
 
+# ============================================================
+# Indicator formatters
+# ============================================================
+def _fmt_indicators(indicators: Dict[str, Any], summary: Dict[str, Any]) -> List[str]:
+    """Format current indicator values as markdown table rows."""
+    lines = []
+    # MA
+    mas = [("MA5", indicators.get("ma5")), ("MA10", indicators.get("ma10")),
+           ("MA20", indicators.get("ma20")), ("MA60", indicators.get("ma60"))]
+    ma_parts = []
+    for label, val in mas:
+        if val is not None:
+            ma_parts.append(f"{label}={val:.2f}")
+    if ma_parts:
+        lines.append(f"  **均线**: {'  |  '.join(ma_parts)}")
+
+    # MA alignment
+    ma_vals = [(n, indicators.get(f"ma{n}")) for n in [5,10,20,60] if indicators.get(f"ma{n}") is not None]
+    if len(ma_vals) >= 3:
+        aligned = all(ma_vals[i][1] >= ma_vals[i+1][1] for i in range(len(ma_vals)-1))
+        reversed_aligned = all(ma_vals[i][1] <= ma_vals[i+1][1] for i in range(len(ma_vals)-1))
+        if aligned:
+            lines.append(f"  **均线排列**: 多头排列 📈 (MA5≥MA10≥MA20≥MA60)")
+        elif reversed_aligned:
+            lines.append(f"  **均线排列**: 空头排列 📉 (MA5≤MA10≤MA20≤MA60)")
+        else:
+            lines.append(f"  **均线排列**: 交叉缠绕 ⚠️ (趋势不明确)")
+
+    # MACD
+    macd = indicators.get("macd", {})
+    if macd:
+        dif = macd.get("dif", 0)
+        dea = macd.get("dea", 0)
+        bar = macd.get("bar", 0)
+        lines.append(f"  **MACD**: DIF={dif:.4f}  DEA={dea:.4f}  BAR={bar:.4f}")
+        if dif > dea:
+            lines.append(f"  **MACD状态**: DIF在DEA上方，多头主导 ↑")
+        elif dif < dea:
+            lines.append(f"  **MACD状态**: DIF在DEA下方，空头主导 ↓")
+        if bar > 0:
+            lines.append(f"  **MACD动能**: 红柱(BAR>0)，多头动能" + ("增强" if bar > 0 else "") + " ↑")
+        else:
+            lines.append(f"  **MACD动能**: 绿柱(BAR<0)，空头动能 ↓")
+
+    # RSI
+    rsi6 = indicators.get("rsi_6")
+    rsi12 = indicators.get("rsi_12")
+    if rsi6 is not None and rsi12 is not None:
+        lines.append(f"  **RSI**: RSI(6)={rsi6:.2f}  RSI(12)={rsi12:.2f}")
+        if rsi6 > 80:
+            lines.append(f"  **RSI状态**: RSI(6)>80，超买区域 ⚠️ 注意回调风险")
+        elif rsi6 < 20:
+            lines.append(f"  **RSI状态**: RSI(6)<20，超卖区域 💡 关注反弹机会")
+        elif rsi6 > 50:
+            lines.append(f"  **RSI状态**: 偏强区域 (50-80)，多头占优")
+        else:
+            lines.append(f"  **RSI状态**: 偏弱区域 (20-50)，空头占优")
+
+    # BOLL
+    boll = indicators.get("boll", {})
+    if boll.get("mid") is not None:
+        lines.append(f"  **布林带**: 上轨={boll['upper']:.2f}  中轨={boll['mid']:.2f}  下轨={boll['lower']:.2f}")
+        bandwidth = (boll['upper'] - boll['lower']) / boll['mid'] * 100 if boll['mid'] else 0
+        lines.append(f"  **布林带宽度**: {bandwidth:.1f}% " +
+                     ("(收窄→可能变盘)" if bandwidth < 5 else "(正常)" if bandwidth < 15 else "(扩张→高波动)"))
+
+    # Summary
+    lines.append(f"  **区间涨跌**: {summary.get('period_change', 0):.2f}%")
+    lines.append(f"  **年化波动率**: {summary.get('volatility', 0):.2f}%")
+    lines.append(f"  **平均成交量**: {summary.get('avg_volume', 0):,}")
+    lines.append(f"  **区间最高/最低**: {summary.get('max_close', 0):.2f} / {summary.get('min_close', 0):.2f}")
+
+    return lines
+
+
+# ============================================================
+# Core prompt generators
+# ============================================================
 def generate_prompt(
     formula: str,
     stock_code: str,
     stock_name: str,
     indicators: Dict[str, Any],
     summary: Dict[str, Any],
+    extra_data: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Generate an AI-ready natural language prompt from TDX formula + stock data.
+    """Generate a comprehensive AI analysis prompt from TDX formula + stock data.
 
     Args:
-        formula: Raw TDX formula text (as pasted by user).
+        formula: Raw TDX formula text.
         stock_code: 6-digit stock code.
         stock_name: Stock name in Chinese.
-        indicators: Dict from indicators.calc_all_indicators().
-        summary: Dict from data_builder.build_summary().
+        indicators: Dict from calc_all_indicators().
+        summary: Dict from build_summary().
+        extra_data: Optional dict with keys like 'weekly_indicators', 'monthly_indicators'
+                    for multi-timeframe analysis.
 
     Returns:
-        Natural language prompt string (Chinese) ready for AI analysis.
+        Natural language Chinese prompt ready for AI analysis.
     """
     extracted = extract_indicators(formula)
 
-    # Build indicator summary for injection
-    indicator_lines = []
-    if indicators.get("ma5") is not None:
-        indicator_lines.append(f"  MA5: {indicators['ma5']:.2f}  |  MA10: {indicators['ma10']:.2f}  |  MA20: {indicators['ma20']:.2f}  |  MA60: {indicators['ma60']:.2f}")
-    macd = indicators.get("macd", {})
-    if macd:
-        indicator_lines.append(f"  MACD: DIF={macd.get('dif', 0):.4f}  DEA={macd.get('dea', 0):.4f}  BAR={macd.get('bar', 0):.4f}")
-    if indicators.get("rsi_6") is not None:
-        indicator_lines.append(f"  RSI(6): {indicators['rsi_6']:.2f}  |  RSI(12): {indicators['rsi_12']:.2f}")
-    boll = indicators.get("boll", {})
-    if boll.get("mid") is not None:
-        indicator_lines.append(f"  BOLL: 上轨={boll['upper']:.2f}  中轨={boll['mid']:.2f}  下轨={boll['lower']:.2f}")
-
-    # Build extracted formula summary
-    formula_elements = []
-    for item in extracted:
-        formula_elements.append(f"  - {item['type']}: {item['detail']}")
-
-    # assemble prompt
-    prompt_parts = [
-        f"你是一位专业的A股技术分析师。请基于以下信息，判断股票 {stock_code}（{stock_name}）",
-        f"是否满足我选股公式的条件。",
+    parts = [
+        f"# A股技术分析任务",
+        "",
+        f"你是一位专业的A股量化分析师。请对 **{stock_code} {stock_name}** 进行全面的技术分析，",
+        f"并根据以下选股公式逐条判断条件是否满足。",
         "",
         "---",
-        "## 当前技术指标数值",
+        "",
+        "## 📊 当前技术指标",
         "",
     ]
-    prompt_parts.extend(indicator_lines if indicator_lines else ["  (无指标数据)"])
+    parts.extend(_fmt_indicators(indicators, summary))
 
-    prompt_parts.extend([
-        "",
-        "## 统计摘要",
-        f"  区间涨跌幅: {summary.get('period_change', 0):.2f}%",
-        f"  区间最高收盘价: {summary.get('max_close', 0):.2f}",
-        f"  区间最低收盘价: {summary.get('min_close', 0):.2f}",
-        f"  平均成交量: {summary.get('avg_volume', 0):,}",
-        f"  年化波动率: {summary.get('volatility', 0):.2f}%",
-        "",
-        "## 我的选股公式",
-        "```",
-        formula.strip(),
-        "```",
-        "",
-        "## 公式解析（自动提取）",
-    ])
-    if formula_elements:
-        prompt_parts.extend(formula_elements)
-    else:
-        prompt_parts.append("  (未能自动解析公式要素，请人工判断)")
+    # Multi-timeframe
+    if extra_data:
+        parts.extend(["", "## 🔄 多周期数据"])
+        for key, label in [("weekly_indicators", "周线"), ("monthly_indicators", "月线")]:
+            if key in extra_data and extra_data[key]:
+                wi = extra_data[key]
+                parts.append(f"")
+                parts.append(f"### {label}")
+                parts.append(f"  MA5={wi['ma5']:.2f}  MA20={wi['ma20']:.2f}  " if wi.get('ma5') else "  数据不足")
+                if wi.get("macd"):
+                    m = wi["macd"]
+                    parts.append(f"  MACD: DIF={m['dif']:.4f} DEA={m['dea']:.4f} BAR={m['bar']:.4f}")
 
-    prompt_parts.extend([
+    parts.extend([
         "",
         "---",
-        "请逐条判断公式中的每个条件是否满足（是/否），并给出综合结论和操作建议。",
-        "如果条件涉及金叉/死叉，请根据指标数值趋势推断。",
+        "",
+        "## 🧩 选股公式解析",
+        f"```",
+        formula.strip(),
+        f"```",
+        "",
+        "公式包含以下要素：",
+    ])
+    for item in extracted:
+        parts.append(f"  - **{item['type']}**: `{item['detail']}`")
+    if not extracted:
+        parts.append("  (未能自动解析，请人工理解公式意图)")
+
+    parts.extend([
+        "",
+        "---",
+        "",
+        "## 📐 多维度分析框架",
+        "",
+        "请按以下框架逐层分析：",
+        "",
+        "### 1. 趋势分析",
+        "  - 判断当前处于上升趋势 / 下降趋势 / 横盘整理",
+        "  - 均线排列形态（多头/空头/缠绕），MA5/10/20/60 的斜率方向",
+        "  - MACD 快慢线位置关系（DIF vs DEA），零轴上方/下方",
+        "  - 结合多周期数据判断趋势共振（日/周/月线趋势方向是否一致）",
+        "",
+        "### 2. 支撑与压力",
+        "  - 布林带上轨（压力位）、中轨（均衡位）、下轨（支撑位）",
+        "  - 各均线（MA5/10/20/60）构成的动态支撑/压力",
+        "  - 近期最高/最低收盘价的关键价位",
+        "  - 当前价格在布林带中的位置（靠近上轨/中轨/下轨）",
+        "",
+        "### 3. 量价关系",
+        "  - 近期成交量变化趋势（放量/缩量/持平）",
+        "  - 价格上涨时是否有成交量配合（价升量增 = 健康上涨）",
+        "  - MACD 柱状线(BAR)变化：红柱延长/缩短 → 多头动能增强/减弱",
+        "  - 是否有量价背离信号（价创新高量不增，或价创新低量不缩）",
+        "",
+        "### 4. 动量与超买超卖",
+        "  - RSI(6) 和 RSI(12) 的超买(>80)/超卖(<20)状态",
+        "  - RSI 背离：价格与RSI走势是否一致",
+        "  - 布林带宽度：收窄（变盘信号）还是扩张（趋势加速）",
+        "  - 年化波动率水平，判断当前风险程度",
+        "",
+        "### 5. 多周期共振分析",
+        "  - 日线、周线、月线的 MACD 方向是否一致",
+        "  - 三个周期的趋势是否共振（同时多头=强势 / 分歧=震荡）",
+        "  - 大周期定方向，小周期找买点",
+        "  - 给出最佳操作周期建议",
+        "",
+        "---",
+        "",
+        "## ✅ 选股条件逐条判断",
+        "",
+        "请对公式中的每个条件给出明确结论：",
+        "",
+        "| 条件 | 是否满足 | 依据 | 置信度 |",
+        "|------|----------|------|--------|",
     ])
 
-    return "\n".join(prompt_parts)
+    for item in extracted:
+        parts.append(f"| {item['detail'][:40]} | 是/否 | (给出具体数值) | 高/中/低 |")
+
+    parts.extend([
+        "",
+        "---",
+        "",
+        "## 🎯 综合结论与建议",
+        "",
+        "### 综合评分 (满分10分)",
+        "  - 趋势得分: _/3",
+        "  - 动量得分: _/3",
+        "  - 量价得分: _/2",
+        "  - 位置得分: _/2",
+        "  - **总分: _/10**",
+        "",
+        "### 关键判断",
+        "  1. 当前是否满足选股公式的所有条件？",
+        "  2. 如果部分不满足，哪些条件接近满足？",
+        "  3. 短期内（1-5个交易日）满足条件的概率？",
+        "",
+        "### 操作建议",
+        "  - **操作方向**: 买入/持有/减仓/卖出/观望",
+        "  - **建议仓位**: 轻仓(1-3成)/中等(4-6成)/重仓(7-10成)",
+        "  - **入场区间**: _元 附近（给出具体价位和理由）",
+        "  - **止损位**: _元（-X%，跌破关键支撑）",
+        "  - **第一目标**: _元（+X%，前高/均线压力）",
+        "  - **第二目标**: _元（+X%，布林上轨/历史高点）",
+        "",
+        "### 风险提示",
+        "  1. 主要风险因素（大盘环境/行业政策/个股基本面）",
+        "  2. 需要关注的后续走势信号",
+        "  3. 什么情况下应止损离场",
+        "",
+        "### 回测建议",
+        "  1. 建议用最近1-3年数据回测本公式的胜率和盈亏比",
+        "  2. 可在通达信中改写公式为选股条件，观察历史选股信号分布",
+        "  3. 建议测试不同参数组合（如MA周期、RSI阈值）的稳健性",
+        "  4. 回测时注意区分牛熊市周期，分别统计胜率",
+        "",
+        "---",
+        "*免责声明: 以上分析仅供学习参考，不构成投资建议。股市有风险，投资需谨慎。*",
+    ])
+
+    return "\n".join(parts)
 
 
 def generate_quick_prompt(
@@ -248,22 +365,14 @@ def generate_quick_prompt(
     name: str,
     indicators: Dict[str, Any],
     summary: Dict[str, Any],
+    extra_data: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Generate a generic AI analysis prompt (no formula), for quick stock analysis.
-
-    Args:
-        code: 6-digit stock code.
-        name: Stock name.
-        indicators: Dict from calc_all_indicators().
-        summary: Dict from build_summary().
-
-    Returns:
-        Natural language prompt string.
-    """
+    """Generate a generic comprehensive analysis prompt (no formula)."""
     return generate_prompt(
-        formula="(无特定公式 — 通用技术分析)",
+        formula="(无特定公式 — 全维度技术分析)",
         stock_code=code,
         stock_name=name,
         indicators=indicators,
         summary=summary,
+        extra_data=extra_data,
     )

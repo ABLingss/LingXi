@@ -15,6 +15,7 @@ DEFAULTS: Dict[str, Any] = {
     "poll_interval": 0.5,          # clipboard polling interval in seconds
     "cache_ttl": 300,              # cache time-to-live in seconds (5 min)
     "request_timeout": 5,          # API request timeout in seconds
+    "save_directory": "",          # save directory for JSON files (empty = cwd)
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")

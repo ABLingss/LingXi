@@ -1,17 +1,19 @@
 """
-web_panel.py — Info panel using PyWebView for Stock JSON Clipper V2.0.
+web_panel.py — Info panel for Stock JSON Clipper V2.0.
 
-Redesigned with:
-  - Manual stock code search bar (no longer clipboard-only)
-  - Tabbed layout: Records / Settings / Formula
-  - Result card with live indicator values
-  - Modern dark theme with native-feel polish
+Tahoe-inspired professional UI with full Chinese localization:
+  - Every indicator label includes Chinese explanation
+  - Clean card-based layout with visual hierarchy
+  - Windows 7+ compatible (fallback-safe CSS)
+  - Manual stock code search + clipboard status
 
 JS ↔ Python bridge via webview.expose() API.
 """
 
 import json
 import threading
+import os
+import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import webview
@@ -28,542 +30,604 @@ PANEL_HTML = r"""
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   :root {
-    --bg: #1a1a24;
-    --surface: #232336;
-    --surface2: #2c2c42;
-    --border: #35354f;
-    --text: #c8c8e0;
-    --text2: #8e8ea8;
-    --accent: #7c9ff5;
-    --accent2: #5b7bd5;
-    --green: #4cda8c;
-    --red: #f54b6a;
-    --yellow: #f0c24b;
-    --purple: #b89df0;
-    --radius: 10px;
-    --radius-sm: 6px;
-    --shadow: 0 2px 12px rgba(0,0,0,0.3);
+    --bg: #14161a;
+    --bg2: #1a1d24;
+    --surface: #1f2229;
+    --surface2: #262a33;
+    --border: #2e3340;
+    --border2: #3a3f4d;
+    --text: #c9cdd4;
+    --text1: #e2e4e9;
+    --text2: #8b8f9a;
+    --text3: #5f636e;
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,0.1);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,0.1);
+    --orange: #f59e0b;
+    --orange-bg: rgba(245,158,11,0.1);
+    --blue: #60a5fa;
+    --blue-bg: rgba(96,165,250,0.1);
+    --purple: #a78bfa;
+    --purple-bg: rgba(167,139,250,0.08);
+    --radius: 8px;
+    --radius-sm: 5px;
+    --font: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC",
+             "Segoe UI", "Helvetica Neue", sans-serif;
+    --font-mono: "Cascadia Code", "Fira Code", "Consolas", "Courier New", monospace;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC",
-                 "Segoe UI", "Helvetica Neue", sans-serif;
+    font-family: var(--font);
     font-size: 13px;
     background: var(--bg);
     color: var(--text);
-    padding: 0;
+    line-height: 1.5;
     overflow-x: hidden;
-    user-select: none;
     -webkit-user-select: none;
+    user-select: none;
   }
+
+  /* ---- Scrollbar ---- */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 
   /* ---- Header ---- */
   .header {
-    background: linear-gradient(135deg, #1e1e38 0%, #232348 100%);
-    padding: 16px 20px 12px;
+    background: linear-gradient(160deg, #191d28 0%, #1f2330 60%, #1a1e2a 100%);
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid var(--border);
     text-align: center;
-    border-bottom: 1px solid var(--border);
   }
-  .header h1 {
-    font-size: 17px;
-    font-weight: 700;
-    color: #fff;
-    letter-spacing: 0.5px;
-  }
-  .header .tagline {
-    font-size: 11px;
-    color: var(--text2);
-    margin-top: 3px;
-  }
+  .header .logo { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 0.3px; }
+  .header .logo .ver { font-size: 10px; color: var(--blue); margin-left: 6px; font-weight: 400; }
+  .header .desc { font-size: 11px; color: var(--text2); margin-top: 2px; }
 
-  /* ---- Search Bar ---- */
-  .search-bar {
-    display: flex;
-    gap: 8px;
+  /* ---- Search ---- */
+  .search-section {
     padding: 12px 16px;
-    background: var(--surface);
+    background: var(--bg2);
     border-bottom: 1px solid var(--border);
-    align-items: center;
-    flex-wrap: wrap;
   }
-  .search-bar input[type="text"] {
-    flex: 1;
-    min-width: 100px;
-    background: var(--bg);
+  .search-row {
+    display: -webkit-flex; display: flex;
+    gap: 8px;
+    -webkit-align-items: center; align-items: center;
+  }
+  .search-input-wrap {
+    -webkit-flex: 1; flex: 1;
+    position: relative;
+  }
+  .search-input-wrap input {
+    width: 100%;
+    background: var(--surface);
     color: #fff;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 8px 12px;
+    padding: 9px 12px;
     font-size: 14px;
-    font-family: inherit;
+    font-family: var(--font);
     outline: none;
-    transition: border-color 0.2s;
+    -webkit-transition: border-color 0.2s; transition: border-color 0.2s;
   }
-  .search-bar input[type="text"]:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(124,159,245,0.15);
-  }
-  .search-bar select {
-    background: var(--bg);
-    color: var(--text);
+  .search-input-wrap input:focus { border-color: var(--blue); }
+  .search-input-wrap input::-webkit-input-placeholder { color: var(--text3); }
+  .search-input-wrap input::-ms-input-placeholder { color: var(--text3); }
+  .search-input-wrap input::placeholder { color: var(--text3); }
+
+  select {
+    background: var(--surface);
+    color: var(--text1);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 8px 10px;
+    padding: 9px 10px;
     font-size: 13px;
-    font-family: inherit;
+    font-family: var(--font);
     outline: none;
     cursor: pointer;
+    min-width: 72px;
   }
-  .search-bar button {
-    background: var(--accent);
+  select:focus { border-color: var(--blue); }
+
+  .btn-search {
+    background: var(--blue);
     color: #fff;
     border: none;
     border-radius: var(--radius-sm);
-    padding: 8px 18px;
+    padding: 9px 18px;
     font-size: 13px;
     font-weight: 600;
+    font-family: var(--font);
     cursor: pointer;
-    transition: background 0.15s, transform 0.1s;
-    font-family: inherit;
+    -webkit-transition: opacity 0.15s; transition: opacity 0.15s;
+    white-space: nowrap;
   }
-  .search-bar button:hover { background: var(--accent2); }
-  .search-bar button:active { transform: scale(0.97); }
-  .search-bar button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .btn-search:hover { opacity: 0.88; }
+  .btn-search:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .save-toggle {
-    display: flex;
-    align-items: center;
-    gap: 5px;
+  .search-options {
+    display: -webkit-flex; display: flex;
+    gap: 14px;
+    margin-top: 8px;
     font-size: 12px;
     color: var(--text2);
+    -webkit-align-items: center; align-items: center;
+  }
+  .search-options label {
+    display: -webkit-flex; display: flex;
+    -webkit-align-items: center; align-items: center;
+    gap: 4px;
     cursor: pointer;
   }
-  .save-toggle input { cursor: pointer; accent-color: var(--accent); }
+  .search-options input[type="checkbox"] { accent-color: var(--blue); cursor: pointer; }
 
-  /* ---- Status bar ---- */
-  .status-bar {
-    display: flex;
-    align-items: center;
+  /* ---- Status ---- */
+  .status-line {
+    display: -webkit-flex; display: flex;
+    -webkit-align-items: center; align-items: center;
     gap: 8px;
-    padding: 8px 20px;
-    font-size: 12px;
+    padding: 6px 18px;
+    font-size: 11px;
     color: var(--text2);
     background: var(--bg);
+    border-bottom: 1px solid var(--border);
   }
   .status-dot {
-    width: 8px; height: 8px;
+    width: 7px; height: 7px;
     border-radius: 50%;
-    flex-shrink: 0;
-    transition: background 0.3s;
+    -webkit-flex-shrink: 0; flex-shrink: 0;
   }
-  .status-dot.monitoring { background: var(--green); box-shadow: 0 0 6px rgba(76,218,140,0.4); }
-  .status-dot.fetching { background: var(--yellow); box-shadow: 0 0 6px rgba(240,194,75,0.5); animation: pulse 0.8s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .status-dot.on { background: var(--green); }
+  .status-dot.off { background: var(--text3); }
+  .status-dot.fetching { background: var(--orange); -webkit-animation: pulse 0.8s infinite; animation: pulse 0.8s infinite; }
+  @-webkit-keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
 
   /* ---- Tabs ---- */
   .tabs {
-    display: flex;
-    gap: 0;
-    padding: 0 16px;
-    background: var(--surface);
+    display: -webkit-flex; display: flex;
+    gap: 2px;
+    padding: 0 14px;
+    background: var(--bg2);
     border-bottom: 1px solid var(--border);
   }
   .tab-btn {
     background: none;
     border: none;
-    color: var(--text2);
-    padding: 10px 16px;
-    font-size: 13px;
-    cursor: pointer;
     border-bottom: 2px solid transparent;
+    color: var(--text2);
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: var(--font);
+    cursor: pointer;
+    -webkit-transition: color 0.2s, border-color 0.2s;
     transition: color 0.2s, border-color 0.2s;
-    font-family: inherit;
   }
   .tab-btn:hover { color: var(--text); }
-  .tab-btn.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
-  }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
 
-  /* ---- Tab content ---- */
-  .tab-content { display: none; padding: 16px; }
+  .tab-content { display: none; }
   .tab-content.active { display: block; }
 
-  /* ---- Result Card ---- */
-  .result-card {
+  /* ---- Main scroll area ---- */
+  .main-area { padding: 12px 14px; }
+
+  /* ---- Card ---- */
+  .card {
     background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 14px 16px;
-    margin-bottom: 12px;
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
+    margin-bottom: 10px;
   }
-  .result-card .stock-title {
-    font-size: 16px;
+  .card-header {
+    display: -webkit-flex; display: flex;
+    -webkit-justify-content: space-between; justify-content: space-between;
+    -webkit-align-items: center; align-items: center;
+    margin-bottom: 10px;
+  }
+  .card-title {
+    font-size: 14px;
     font-weight: 700;
     color: #fff;
-    margin-bottom: 4px;
   }
-  .result-card .stock-meta {
-    font-size: 11px;
-    color: var(--text2);
+  .card-title .code { color: var(--text2); font-weight: 400; margin-left: 6px; }
+
+  .meta-tags {
+    display: -webkit-flex; display: flex;
+    gap: 6px;
+    -webkit-flex-wrap: wrap; flex-wrap: wrap;
     margin-bottom: 10px;
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
   }
-  .result-card .stock-meta span {
+  .meta-tag {
     background: var(--surface2);
+    color: var(--text2);
     padding: 2px 8px;
     border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
   }
+  .meta-tag .val { color: var(--text1); }
 
-  .indicator-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-  .indicator-item {
-    background: var(--surface2);
-    border-radius: var(--radius-sm);
-    padding: 8px 10px;
-  }
-  .indicator-item .label { font-size: 10px; color: var(--text2); text-transform: uppercase; }
-  .indicator-item .value { font-size: 15px; font-weight: 700; color: #fff; font-variant-numeric: tabular-nums; }
-  .indicator-item .value.up { color: var(--green); }
-  .indicator-item .value.down { color: var(--red); }
-
-  .card-actions {
-    display: flex;
-    gap: 8px;
-  }
-  .card-actions button {
-    background: var(--surface2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 7px 14px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.15s;
-    font-family: inherit;
-  }
-  .card-actions button:hover {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-  }
-  .card-actions button.primary {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-  }
-  .card-actions button.primary:hover { background: var(--accent2); }
-
-  .empty-result {
-    text-align: center;
-    padding: 32px 16px;
-    color: var(--text2);
-    background: var(--surface);
-    border-radius: var(--radius);
-  }
-  .empty-result .icon { font-size: 36px; margin-bottom: 8px; }
-  .empty-result p { font-size: 12px; line-height: 1.6; }
-
-  /* ---- History Table ---- */
-  table {
+  /* Indicator table */
+  .ind-table {
     width: 100%;
     border-collapse: collapse;
     font-size: 12px;
   }
-  th {
-    text-align: left;
+  .ind-table td {
     padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .ind-table .lbl { color: var(--text2); white-space: nowrap; width: 30%; }
+  .ind-table .val { color: var(--text1); font-weight: 600; font-family: var(--font-mono); font-size: 13px; }
+  .ind-table .val.up { color: var(--green); }
+  .ind-table .val.down { color: var(--red); }
+  .ind-table .note { color: var(--text3); font-size: 11px; font-weight: 400; padding-left: 6px; }
+
+  .card-actions {
+    display: -webkit-flex; display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .card-actions button {
+    background: var(--surface2);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 7px 14px;
+    font-size: 12px;
+    font-family: var(--font);
+    cursor: pointer;
+    -webkit-transition: all 0.15s; transition: all 0.15s;
+  }
+  .card-actions button:hover { background: #323748; }
+  .card-actions button.btn-primary {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border-color: rgba(96,165,250,0.25);
+  }
+  .card-actions button.btn-primary:hover { background: rgba(96,165,250,0.2); }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text3);
+  }
+  .empty-state .icon { font-size: 40px; margin-bottom: 10px; }
+  .empty-state .hint { font-size: 12px; color: var(--text2); margin-top: 4px; line-height: 1.6; }
+
+  /* History */
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .history-table th {
+    text-align: left;
+    padding: 5px 8px;
     border-bottom: 1px solid var(--border);
     color: var(--text2);
     font-weight: 500;
     font-size: 11px;
   }
-  td { padding: 6px 8px; border-bottom: 1px solid var(--surface2); }
-  .status-success { color: var(--green); }
-  .status-error { color: var(--red); }
-  .status-cached { color: var(--accent); }
-  .status-pending { color: var(--yellow); }
-  .empty-row { text-align: center; color: var(--text2); padding: 20px !important; }
-
-  /* ---- Settings ---- */
-  .setting-group {
-    background: var(--surface);
-    border-radius: var(--radius);
-    padding: 14px 16px;
-    margin-bottom: 10px;
-    border: 1px solid var(--border);
+  .history-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
   }
-  .setting-group label {
+  .history-table .status-ok { color: var(--green); }
+  .history-table .status-err { color: var(--red); }
+  .history-table .status-cache { color: var(--blue); }
+  .history-table .status-pend { color: var(--orange); }
+  .history-table .empty { text-align: center; color: var(--text3); padding: 16px; }
+
+  /* Settings */
+  .setting-item {
+    margin-bottom: 12px;
+  }
+  .setting-item label {
     display: block;
     font-size: 11px;
     color: var(--text2);
-    margin-bottom: 4px;
+    margin-bottom: 3px;
     text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
-  .setting-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 10px;
-    flex-wrap: wrap;
+  .setting-item .setting-hint {
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 2px;
   }
-  .setting-row input[type="number"] {
+  .setting-item input[type="text"],
+  .setting-item input[type="number"] {
     background: var(--bg);
-    color: #fff;
+    color: var(--text1);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 6px 10px;
+    padding: 7px 10px;
     font-size: 13px;
-    width: 90px;
-    font-family: inherit;
+    font-family: var(--font);
     outline: none;
+    width: 100%;
   }
-  .setting-row input[type="number"]:focus { border-color: var(--accent); }
-  .setting-row select {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 6px 10px;
-    font-size: 13px;
-    font-family: inherit;
-    outline: none;
-  }
+  .setting-item input:focus { border-color: var(--blue); }
+  .setting-item input[type="number"] { width: 120px; }
 
-  .btn-row { display: flex; gap: 8px; margin-top: 6px; }
+  .btn-row { display: -webkit-flex; display: flex; gap: 8px; margin-top: 10px; }
   .btn-row button {
     background: var(--surface2);
-    color: var(--text);
+    color: var(--text1);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 7px 14px;
     font-size: 12px;
+    font-family: var(--font);
     cursor: pointer;
-    transition: all 0.15s;
-    font-family: inherit;
+    -webkit-transition: all 0.15s; transition: all 0.15s;
   }
-  .btn-row button:hover { background: #3c3c58; }
-  .btn-row button.danger { color: var(--red); }
-  .btn-row button.danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
+  .btn-row button:hover { background: #323748; }
+  .btn-row button.btn-danger { color: var(--red); }
+  .btn-row button.btn-danger:hover { background: var(--red-bg); border-color: var(--red); }
 
-  /* ---- Formula ---- */
+  /* Toggle switch */
+  .toggle-wrap {
+    display: -webkit-flex; display: flex;
+    -webkit-align-items: center; align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  .toggle-sw {
+    width: 36px; height: 20px;
+    background: var(--border2);
+    border-radius: 10px;
+    position: relative;
+    cursor: pointer;
+    -webkit-transition: background 0.2s; transition: background 0.2s;
+  }
+  .toggle-sw.on { background: var(--green); }
+  .toggle-sw::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    background: #fff;
+    border-radius: 50%;
+    -webkit-transition: -webkit-transform 0.2s; transition: transform 0.2s;
+  }
+  .toggle-sw.on::after { -webkit-transform: translateX(16px); transform: translateX(16px); }
+
+  /* Textarea */
   textarea {
     width: 100%;
-    min-height: 100px;
+    min-height: 90px;
     background: var(--bg);
-    color: var(--text);
+    color: var(--text1);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 10px;
     font-size: 12px;
-    font-family: "Cascadia Code", "Consolas", "Fira Code", monospace;
+    font-family: var(--font-mono);
     resize: vertical;
     outline: none;
   }
-  textarea:focus { border-color: var(--accent); }
+  textarea:focus { border-color: var(--blue); }
 
-  /* ---- Toast ---- */
+  /* Toast */
   .toast {
     position: fixed;
     bottom: 20px;
     left: 50%;
-    transform: translateX(-50%);
-    background: #333;
+    -webkit-transform: translateX(-50%); transform: translateX(-50%);
+    background: #333a47;
     color: #fff;
     padding: 10px 24px;
     border-radius: 20px;
     font-size: 12px;
     opacity: 0;
-    transition: opacity 0.3s;
+    -webkit-transition: opacity 0.3s; transition: opacity 0.3s;
     pointer-events: none;
     z-index: 999;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   }
   .toast.show { opacity: 1; }
 
-  /* ---- Footer ---- */
   .footer {
     text-align: center;
-    color: var(--text2);
+    color: var(--text3);
     font-size: 10px;
-    padding: 10px;
-    opacity: 0.6;
+    padding: 8px;
+    opacity: 0.5;
   }
 </style>
 </head>
 <body>
 
-<!-- Header -->
 <div class="header">
-  <h1>📈 Stock JSON Clipper V2.0</h1>
-  <div class="tagline">零安装 · 纯本地 · 剪贴板驱动 · AI就绪</div>
+  <div class="logo">📈 Stock JSON Clipper<span class="ver">V2.0</span></div>
+  <div class="desc">A股数据桥梁 · 纯本地运行 · 一键生成AI分析JSON</div>
 </div>
 
-<!-- Search Bar -->
-<div class="search-bar">
-  <input type="text" id="searchInput" placeholder="输入6位股票代码，如 000001…" maxlength="8"
-         autofocus autocomplete="off">
-  <select id="searchPeriod">
-    <option value="daily">日线</option>
-    <option value="weekly">周线</option>
-    <option value="monthly">月线</option>
-  </select>
-  <button id="searchBtn" onclick="onSearch()">🔍 查询</button>
-  <label class="save-toggle">
-    <input type="checkbox" id="searchSave">
-    <span>保存到文件</span>
-  </label>
+<!-- Search -->
+<div class="search-section">
+  <div class="search-row">
+    <div class="search-input-wrap">
+      <input type="text" id="searchInput"
+             placeholder="输入6位股票代码，如 000001（深市平安银行）"
+             maxlength="8" autofocus autocomplete="off">
+    </div>
+    <select id="searchPeriod">
+      <option value="daily">日线</option>
+      <option value="weekly">周线</option>
+      <option value="monthly">月线</option>
+    </select>
+    <button class="btn-search" id="searchBtn" onclick="onSearch()">查询</button>
+  </div>
+  <div class="search-options">
+    <label><input type="checkbox" id="searchSave"><span>保存为本地文件（不写入剪贴板）</span></label>
+    <span style="color:var(--text3);">| 剪贴板快捷: <code>W:</code>周线 <code>M:</code>月线 <code>#</code>保存</span>
+  </div>
 </div>
 
 <!-- Status -->
-<div class="status-bar">
-  <div class="status-dot monitoring" id="statusDot"></div>
-  <span id="statusText">🟢 剪贴板监控中…</span>
+<div class="status-line">
+  <div class="status-dot on" id="statusDot"></div>
+  <span id="statusText">剪贴板监控运行中 — 在股票软件复制代码即可自动识别</span>
 </div>
 
 <!-- Tabs -->
 <div class="tabs">
-  <button class="tab-btn active" data-tab="records">📋 查询结果</button>
+  <button class="tab-btn active" data-tab="data">📊 数据查询</button>
   <button class="tab-btn" data-tab="settings">⚙️ 设置</button>
-  <button class="tab-btn" data-tab="formula">🤖 公式辅助</button>
+  <button class="tab-btn" data-tab="formula">🤖 AI分析</button>
 </div>
 
-<!-- ========== Tab: Records ========== -->
-<div class="tab-content active" id="tab-records">
+<!-- ====== Tab: 数据查询 ====== -->
+<div class="tab-content active" id="tab-data">
+  <div class="main-area">
 
-  <!-- Result Card -->
-  <div id="resultCard" class="result-card" style="display:none;">
-    <div class="stock-title" id="rcTitle">--</div>
-    <div class="stock-meta" id="rcMeta"></div>
-    <div class="indicator-grid" id="rcIndicators"></div>
-    <div class="card-actions">
-      <button class="primary" onclick="onCopyJSON()">📋 复制 JSON</button>
-      <button onclick="onCopyPrompt()">🤖 生成 AI Prompt</button>
-      <button onclick="onSaveFile()">💾 保存到文件</button>
+    <!-- Result Card -->
+    <div id="resultCard" class="card" style="display:none;">
+      <div class="card-header">
+        <div class="card-title" id="rcTitle">--<span class="code"></span></div>
+        <span style="font-size:11px;color:var(--text3);" id="rcPeriod"></span>
+      </div>
+      <div class="meta-tags" id="rcMeta"></div>
+
+      <!-- Indicators -->
+      <table class="ind-table" id="rcIndicators"></table>
+
+      <div class="card-actions">
+        <button class="btn-primary" onclick="onCopyJSON()">📋 复制完整JSON</button>
+        <button onclick="onCopyPrompt()">🤖 生成AI分析提示词</button>
+        <button onclick="onSaveFile()">💾 保存为JSON文件</button>
+      </div>
+    </div>
+
+    <div id="emptyResult">
+      <div class="empty-state">
+        <div class="icon">📡</div>
+        <div>暂无查询数据</div>
+        <div class="hint">在上方输入股票代码点击「查询」<br>或在通达信/同花顺中 Ctrl+C 复制代码自动识别<br><br><span style="color:var(--text3);">支持: 000001（日线）/ W:000001（周线）/ M:000001（月线）/ #000001（保存文件）</span></div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card" style="margin-top:6px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text1);margin-bottom:8px;">📜 最近查询记录</div>
+      <table class="history-table">
+        <thead><tr><th>时间</th><th>代码</th><th>名称</th><th>状态</th></tr></thead>
+        <tbody id="historyBody">
+          <tr class="empty"><td colspan="4">暂无记录 — 查询或复制股票代码后自动显示</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
-
-  <!-- Empty state -->
-  <div id="emptyResult" class="empty-result">
-    <div class="icon">📡</div>
-    <p>等待数据…</p>
-    <p style="font-size:11px;">上方输入股票代码查询<br>或在股票软件中复制代码自动识别</p>
-  </div>
-
-  <!-- History -->
-  <div style="margin-top:14px;">
-    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;">📜 最近记录</div>
-    <table>
-      <thead><tr><th>时间</th><th>代码</th><th>名称</th><th>状态</th></tr></thead>
-      <tbody id="historyBody">
-        <tr class="empty-row"><td colspan="4">暂无记录</td></tr>
-      </tbody>
-    </table>
-  </div>
 </div>
 
-<!-- ========== Tab: Settings ========== -->
+<!-- ====== Tab: 设置 ====== -->
 <div class="tab-content" id="tab-settings">
-  <div class="setting-group">
-    <label>输出格式</label>
-    <div class="setting-row">
-      <select id="outputFormat" onchange="onConfigChange('output_format', this.value)">
-        <option value="json" selected>JSON</option>
-      </select>
-      <span style="font-size:11px;color:var(--text2);">更多格式开发中</span>
+  <div class="main-area">
+    <div class="card">
+      <div class="card-title" style="font-size:13px;margin-bottom:10px;">🔌 剪贴板监控</div>
+      <div class="toggle-wrap" onclick="onToggleMonitor()">
+        <div class="toggle-sw on" id="clipboardToggle"></div>
+        <span style="font-size:13px;">启用剪贴板自动识别</span>
+      </div>
+      <div class="setting-hint" style="color:var(--text3);font-size:11px;margin-top:4px;">
+        关闭后仅可通过上方搜索框手动输入代码查询
+      </div>
     </div>
-  </div>
 
-  <div class="setting-group">
-    <label>剪贴板监控</label>
-    <div class="setting-row">
-      <label class="save-toggle" style="font-size:13px;color:var(--text);cursor:pointer;">
-        <input type="checkbox" id="clipboardToggle" checked onchange="onToggleMonitor(this.checked)">
-        <span>启用剪贴板自动识别</span>
-      </label>
-      <span style="font-size:11px;color:var(--text2);">关闭后可仅使用搜索框查询</span>
+    <div class="card">
+      <div class="card-title" style="font-size:13px;margin-bottom:10px;">📊 数据设置</div>
+      <div class="setting-item">
+        <label>默认拉取K线条数（5 ~ 9999）</label>
+        <input type="number" id="defaultCount" min="5" max="9999" value="250"
+               onchange="onConfigChange('default_count', parseInt(this.value))">
+        <div class="setting-hint">数值越大包含的历史数据越多，但JSON越长</div>
+      </div>
+      <div class="setting-item">
+        <label>JSON文件保存目录（留空 = 程序所在目录）</label>
+        <input type="text" id="saveDirectory" placeholder="例如: D:\股票数据" style="width:100%;"
+               onchange="onConfigChange('save_directory', this.value)">
+        <div class="setting-hint">修改后点击「💾 保存为JSON文件」时将保存到新目录</div>
+      </div>
     </div>
-  </div>
 
-  <div class="setting-group">
-    <label>数据设置</label>
-    <div class="setting-row">
-      <span style="font-size:12px;">默认条数</span>
-      <input type="number" id="defaultCount" min="5" max="9999" value="250"
-             onchange="onConfigChange('default_count', parseInt(this.value))">
+    <div class="card">
+      <div class="card-title" style="font-size:13px;margin-bottom:10px;">⚡ 高级设置</div>
+      <div class="setting-item">
+        <label>剪贴板轮询间隔（秒，0.2 ~ 5）</label>
+        <input type="number" id="pollInterval" min="0.2" max="5" step="0.1" value="0.5"
+               onchange="onConfigChange('poll_interval', parseFloat(this.value))">
+        <div class="setting-hint">每0.5秒检查一次剪贴板。调大可以减少CPU占用</div>
+      </div>
+      <div class="setting-item">
+        <label>数据缓存时间（秒，10 ~ 3600）</label>
+        <input type="number" id="cacheTTL" min="10" max="3600" value="300"
+               onchange="onConfigChange('cache_ttl', parseInt(this.value))">
+        <div class="setting-hint">同一代码在缓存时间内重复查询将直接返回缓存结果，不消耗API请求</div>
+      </div>
     </div>
-    <div class="setting-row">
-      <span style="font-size:12px;">剪贴板轮询间隔</span>
-      <input type="number" id="pollInterval" min="0.2" max="5" step="0.1" value="0.5"
-             onchange="onConfigChange('poll_interval', parseFloat(this.value))">
-      <span style="font-size:11px;color:var(--text2);">秒</span>
-    </div>
-    <div class="setting-row">
-      <span style="font-size:12px;">缓存时间</span>
-      <input type="number" id="cacheTTL" min="10" max="3600" value="300"
-             onchange="onConfigChange('cache_ttl', parseInt(this.value))">
-      <span style="font-size:11px;color:var(--text2);">秒</span>
-    </div>
-  </div>
 
-  <div class="btn-row">
-    <button class="danger" onclick="onClearCache()">🗑 清空缓存</button>
+    <div class="btn-row" style="padding:0 0 10px 0;">
+      <button class="btn-danger" onclick="onClearCache()">🗑 清空数据缓存</button>
+    </div>
   </div>
 </div>
 
-<!-- ========== Tab: Formula ========== -->
+<!-- ====== Tab: AI分析 ====== -->
 <div class="tab-content" id="tab-formula">
-  <div class="setting-group">
-    <label>通达信选股公式</label>
-    <textarea id="formulaInput" placeholder="在此粘贴通达信选股公式…&#10;例如: CROSS(MA(C,5), MA(C,20)) AND RSI(6)>50"></textarea>
-    <div class="btn-row">
-      <button class="primary" onclick="onGeneratePrompt()">✨ 生成 Prompt 并复制</button>
-      <button onclick="document.getElementById('formulaInput').value=''">清空</button>
-    </div>
-  </div>
-  <div class="setting-group">
-    <label>快速操作</label>
-    <div class="btn-row">
-      <button onclick="onQuickAnalyze()">📊 快速技术分析</button>
+  <div class="main-area">
+    <div class="card">
+      <div class="card-title" style="font-size:13px;margin-bottom:10px;">🤖 通达信公式 → AI分析提示词</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">
+        将通达信选股公式粘贴到下方，系统会自动解析公式要素，结合当前股票的技术指标，
+        生成一份专业的AI分析提示词。将提示词粘贴到 ChatGPT / DeepSeek / Claude 对话框即可获得分析。
+      </div>
+      <textarea id="formulaInput" placeholder="在此粘贴通达信选股公式&#10;例如: CROSS(MA(收盘价,5), MA(收盘价,20)) AND RSI(6) 大于 50&#10;&#10;支持: MA均线 / MACD / RSI / BOLL布林带 / CROSS金叉死叉 / 比较运算"></textarea>
+      <div class="card-actions" style="margin-top:10px;">
+        <button class="btn-primary" onclick="onGeneratePrompt()">✨ 生成选股分析提示词</button>
+        <button onclick="onQuickAnalyze()">📊 快速技术分析（无需公式）</button>
+        <button onclick="document.getElementById('formulaInput').value=''">清空公式</button>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">
+        提示词将自动复制到剪贴板，直接粘贴到AI对话框使用。生成前请先查询股票数据。
+      </div>
     </div>
   </div>
 </div>
 
-<!-- Toast -->
 <div class="toast" id="toast"></div>
-
-<div class="footer">Stock JSON Clipper V2.0 · Open Source · MIT</div>
+<div class="footer">Stock JSON Clipper V2.0 · 开源软件 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
 
 <script>
 // ============================================================
-// Globals
-// ============================================================
-var _currentResult = null;  // last fetched detail
-var _pollFast = false;
-
-// ============================================================
 // Tab switching
 // ============================================================
-document.querySelectorAll('.tab-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
-    document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-  });
-});
+(function() {
+  var btns = document.querySelectorAll('.tab-btn');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].addEventListener('click', function() {
+      var tab = this.dataset.tab;
+      var allBtns = document.querySelectorAll('.tab-btn');
+      for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
+      var allTabs = document.querySelectorAll('.tab-content');
+      for (var k = 0; k < allTabs.length; k++) allTabs[k].classList.remove('active');
+      this.classList.add('active');
+      document.getElementById('tab-' + tab).classList.add('active');
+    });
+  }
+})();
 
 // ============================================================
 // Search
@@ -571,62 +635,56 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
 function onSearch() {
   var input = document.getElementById('searchInput');
   var code = input.value.trim();
-  if (!code) { showToast('请输入股票代码'); return; }
+  if (!code) { showToast('请输入股票代码（6位数字）'); return; }
 
-  // Support prefix notation: #000001, W:000001, M:000001
-  // Strip non-digit for validation, but pass raw to backend
   var digits = code.replace(/[#WM:]/g, '');
   if (!/^\d{6}$/.test(digits)) {
-    showToast('请输入有效的6位数字股票代码');
+    showToast('请输入有效的6位数字股票代码，例如 000001');
     return;
   }
 
   var period = document.getElementById('searchPeriod').value;
   var saveMode = document.getElementById('searchSave').checked;
-
   var btn = document.getElementById('searchBtn');
   btn.disabled = true;
-  btn.textContent = '⏳ 查询中…';
+  btn.textContent = '查询中…';
 
-  // Show loading
   document.getElementById('statusDot').className = 'status-dot fetching';
-  document.getElementById('statusText').textContent = '⏳ 正在拉取数据…';
-  _pollFast = true;
+  document.getElementById('statusText').textContent = '正在拉取 ' + code + ' 的数据…';
+  window._pollFast = true;
 
-  // Queue the search via Python backend
   pywebview.api.search_stock(code, period, saveMode).then(function(res) {
     if (res && res.success) {
-      showToast('✅ 已加入查询队列: ' + code);
-      // Start fast polling for result
+      showToast('已加入查询队列: ' + code + '（数据源: 腾讯财经→新浪财经→东方财富 自动切换）');
       fastPollResult(0);
     } else {
-      showToast('❌ ' + (res && res.error ? res.error : '查询失败'));
+      showToast('查询失败: ' + (res && res.error ? res.error : '未知错误'));
       btn.disabled = false;
-      btn.textContent = '🔍 查询';
-      _pollFast = false;
+      btn.textContent = '查询';
+      window._pollFast = false;
     }
   }).catch(function(e) {
-    showToast('❌ 内部错误');
+    showToast('内部错误，请重试');
     btn.disabled = false;
-    btn.textContent = '🔍 查询';
-    _pollFast = false;
+    btn.textContent = '查询';
+    window._pollFast = false;
   });
 }
 
 function fastPollResult(count) {
-  if (count > 30) {  // timeout after ~3s
-    _pollFast = false;
+  if (count > 30) {
+    window._pollFast = false;
     document.getElementById('searchBtn').disabled = false;
-    document.getElementById('searchBtn').textContent = '🔍 查询';
+    document.getElementById('searchBtn').textContent = '查询';
     return;
   }
   pywebview.api.get_last_result_detail().then(function(detail) {
     if (detail && detail.meta && detail.meta.code) {
-      _currentResult = detail;
+      window._currentResult = detail;
       renderResultCard(detail);
       document.getElementById('searchBtn').disabled = false;
-      document.getElementById('searchBtn').textContent = '🔍 查询';
-      _pollFast = false;
+      document.getElementById('searchBtn').textContent = '查询';
+      window._pollFast = false;
     } else {
       setTimeout(function() { fastPollResult(count + 1); }, 200);
     }
@@ -635,7 +693,6 @@ function fastPollResult(count) {
   });
 }
 
-// Allow Enter key in search input
 document.getElementById('searchInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') onSearch();
 });
@@ -646,65 +703,81 @@ document.getElementById('searchInput').addEventListener('keydown', function(e) {
 function renderResultCard(detail) {
   if (!detail) return;
   var meta = detail.meta || {};
-  var indicators = detail.indicators || {};
-  var summary = detail.summary || {};
-  var macd = indicators.macd || {};
-  var boll = indicators.boll || {};
+  var ind = detail.indicators || {};
+  var sum = detail.summary || {};
+  var macd = ind.macd || {};
+  var boll = ind.boll || {};
 
-  // Hide empty state, show card
   document.getElementById('emptyResult').style.display = 'none';
   document.getElementById('resultCard').style.display = 'block';
 
   // Title
   var name = meta.name || '--';
   var code = meta.code || '--';
-  document.getElementById('rcTitle').textContent = name + ' (' + code + ')';
+  document.getElementById('rcTitle').innerHTML = name + '<span class="code">' + code + '</span>';
+
+  // Period label
+  var pLabels = {daily: '日线数据', weekly: '周线数据', monthly: '月线数据'};
+  document.getElementById('rcPeriod').textContent = pLabels[meta.period] || meta.period || '';
 
   // Meta tags
-  var metaHtml = '';
-  if (meta.market) metaHtml += '<span>🏛 ' + meta.market + '</span>';
-  if (meta.industry) metaHtml += '<span>📂 ' + meta.industry + '</span>';
-  if (meta.pe_ttm !== undefined && meta.pe_ttm >= 0) metaHtml += '<span>PE(TTM): ' + meta.pe_ttm.toFixed(2) + '</span>';
+  var tags = '';
+  if (meta.market) tags += '<span class="meta-tag">市场: <span class="val">' + meta.market + '</span></span>';
+  if (meta.industry && meta.industry !== 'GP-A') tags += '<span class="meta-tag">行业: <span class="val">' + meta.industry + '</span></span>';
+  if (meta.pe_ttm !== undefined && meta.pe_ttm > 0)
+    tags += '<span class="meta-tag">市盈率(PE): <span class="val">' + meta.pe_ttm.toFixed(2) + '</span></span>';
   if (meta.total_mv !== undefined && meta.total_mv > 0) {
     var mv = meta.total_mv;
     var mvStr = mv >= 1e8 ? (mv/1e8).toFixed(0) + '亿' : (mv/1e4).toFixed(0) + '万';
-    metaHtml += '<span>市值: ' + mvStr + '</span>';
+    tags += '<span class="meta-tag">总市值: <span class="val">' + mvStr + '</span></span>';
   }
-  if (meta.period) {
-    var pLabels = {daily:'日线', weekly:'周线', monthly:'月线'};
-    metaHtml += '<span>📅 ' + (pLabels[meta.period] || meta.period) + '</span>';
-  }
-  if (meta.start_date) metaHtml += '<span>' + meta.start_date + ' ~ ' + meta.end_date + '</span>';
-  document.getElementById('rcMeta').innerHTML = metaHtml;
+  if (meta.start_date) tags += '<span class="meta-tag">数据区间: <span class="val">' + meta.start_date + ' ~ ' + meta.end_date + '</span></span>';
+  document.getElementById('rcMeta').innerHTML = tags;
 
-  // Indicator grid
-  var indHtml = '';
-  function addItem(label, value, unit) {
-    var cls = 'value';
-    if (value === null || value === undefined) {
-      value = '--';
-    } else if (typeof value === 'number') {
-      value = value.toFixed(2);
+  // Indicator table
+  var rows = '';
+  function row(label, val, unit, note) {
+    unit = unit || '';
+    note = note || '';
+    var v = '--';
+    var cls = '';
+    if (val !== null && val !== undefined && !isNaN(val)) {
+      v = Number(val).toFixed(2);
     }
-    indHtml += '<div class="indicator-item"><div class="label">' + label + '</div><div class="' + cls + '">' + value + (unit||'') + '</div></div>';
+    rows += '<tr><td class="lbl">' + label + '</td><td class="val ' + cls + '">' + v + unit + '<span class="note">' + note + '</span></td></tr>';
   }
-  addItem('MA5', indicators.ma5);
-  addItem('MA10', indicators.ma10);
-  addItem('MA20', indicators.ma20);
-  addItem('MA60', indicators.ma60);
-  addItem('MACD · DIF', macd.dif);
-  addItem('MACD · DEA', macd.dea);
-  addItem('MACD · BAR', macd.bar);
-  addItem('RSI(6)', indicators.rsi_6);
-  addItem('RSI(12)', indicators.rsi_12);
-  addItem('BOLL上轨', boll.upper);
-  addItem('BOLL中轨', boll.mid);
-  addItem('BOLL下轨', boll.lower);
-  addItem('区间涨跌', summary.period_change, '%');
-  addItem('年化波动', summary.volatility, '%');
-  addItem('最高收盘', summary.max_close);
-  addItem('最低收盘', summary.min_close);
-  document.getElementById('rcIndicators').innerHTML = indHtml;
+
+  // Price
+  row('最新收盘价', sum.max_close ? (ind.ma5 || '') : '', '', '最近交易日收盘价');
+
+  // MA
+  row('5日均线 (MA5)', ind.ma5, '', '短期趋势参考');
+  row('10日均线 (MA10)', ind.ma10, '', '短期趋势参考');
+  row('20日均线 (MA20)', ind.ma20, '', '中期趋势参考');
+  row('60日均线 (MA60)', ind.ma60, '', '长期趋势参考（季线）');
+
+  // MACD
+  row('MACD快线 (DIF)', macd.dif, '', '指数平滑异同平均线 — 快线（12日EMA）');
+  row('MACD慢线 (DEA)', macd.dea, '', '指数平滑异同平均线 — 慢线（9日DIF均线）');
+  row('MACD柱状线 (BAR)', macd.bar, '', '红柱=多头动能，绿柱=空头动能');
+
+  // RSI
+  row('相对强弱指标 RSI(6)', ind.rsi_6, '', '6日RSI — >80超买区，<20超卖区');
+  row('相对强弱指标 RSI(12)', ind.rsi_12, '', '12日RSI — 中长期超买超卖判断');
+
+  // BOLL
+  row('布林带上轨 (BOLL Upper)', boll.upper, '', '压力位参考 — 价格触及上轨可能回调');
+  row('布林带中轨 (BOLL Mid)', boll.mid, '', '20日均线 — 多空平衡位');
+  row('布林带下轨 (BOLL Lower)', boll.lower, '', '支撑位参考 — 价格触及下轨可能反弹');
+
+  // Summary
+  row('区间涨跌幅', sum.period_change, '%', '选中时间范围内的价格变动百分比');
+  row('年化波动率', sum.volatility, '%', '年化标准差 — 衡量风险程度');
+  row('区间最高收盘价', sum.max_close, '', '选中范围内最高收盘价');
+  row('区间最低收盘价', sum.min_close, '', '选中范围内最低收盘价');
+  row('平均成交量', (sum.avg_volume || 0), '手', '选中范围内日均成交量');
+
+  document.getElementById('rcIndicators').innerHTML = rows;
 }
 
 // ============================================================
@@ -712,64 +785,56 @@ function renderResultCard(detail) {
 // ============================================================
 function onCopyJSON() {
   pywebview.api.copy_last_json().then(function(r) {
-    if (r && r.success) showToast('✅ JSON 已复制到剪贴板');
-    else showToast('❌ 暂无数据可复制');
+    showToast(r && r.success ? '完整JSON已复制到剪贴板，可直接粘贴到AI对话框' : '暂无数据可复制');
   });
 }
 
 function onCopyPrompt() {
   pywebview.api.quick_analysis_prompt().then(function(r) {
-    if (r && r.success) showToast('✅ Prompt 已复制到剪贴板，直接粘贴到 AI 对话框');
-    else showToast('❌ ' + (r && r.error ? r.error : '操作失败'));
+    showToast(r && r.success ? 'AI分析提示词已复制到剪贴板，请粘贴到 ChatGPT/DeepSeek/Claude' : (r && r.error ? r.error : '操作失败'));
   });
 }
 
 function onSaveFile() {
   pywebview.api.save_last_to_file().then(function(r) {
-    if (r && r.success) showToast('💾 已保存: ' + r.filename);
-    else showToast('❌ 保存失败');
+    showToast(r && r.success ? '已保存文件: ' + r.filename : '保存失败');
   });
 }
 
 // ============================================================
-// Other JS↔Py calls
+// AI Prompt
 // ============================================================
 function onGeneratePrompt() {
   var formula = document.getElementById('formulaInput').value.trim();
-  if (!formula) { showToast('请先粘贴通达信选股公式'); return; }
+  if (!formula) { showToast('请先粘贴通达信选股公式到文本框中'); return; }
   pywebview.api.generate_prompt(formula).then(function(r) {
-    if (r && r.success) showToast('✅ Prompt 已生成并复制到剪贴板');
-    else showToast('❌ ' + (r && r.error ? r.error : '生成失败'));
+    showToast(r && r.success ? '选股分析提示词已生成并复制到剪贴板！请粘贴到AI对话框' : (r && r.error ? r.error : '生成失败，请确认已查询股票数据'));
   });
 }
 
 function onQuickAnalyze() {
   pywebview.api.quick_analysis_prompt().then(function(r) {
-    if (r && r.success) showToast('✅ 分析 Prompt 已复制到剪贴板');
-    else showToast('❌ ' + (r && r.error ? r.error : '暂无数据'));
+    showToast(r && r.success ? '技术分析提示词已复制到剪贴板！请粘贴到AI对话框' : (r && r.error ? r.error : '暂无股票数据，请先查询股票代码'));
   });
 }
 
-function onClearCache() {
-  pywebview.api.clear_cache();
-  showToast('🔄 缓存已清空');
-}
-
-function onToggleMonitor(enabled) {
+// ============================================================
+// Settings
+// ============================================================
+function onToggleMonitor() {
   pywebview.api.toggle_clipboard_monitor().then(function(isOn) {
-    var toggle = document.getElementById('clipboardToggle');
-    toggle.checked = isOn;
-    if (isOn) {
-      showToast('🟢 剪贴板监控已开启');
-    } else {
-      showToast('⏸ 剪贴板监控已暂停 — 仍可手动查询');
-    }
+    var el = document.getElementById('clipboardToggle');
+    if (isOn) { el.classList.add('on'); }
+    else { el.classList.remove('on'); }
+    showToast(isOn ? '剪贴板监控已开启 — 复制股票代码即可自动识别' : '剪贴板监控已暂停 — 您仍可手动输入代码查询');
   });
 }
+
+function onClearCache() { pywebview.api.clear_cache(); showToast('数据缓存已清空，下次查询将重新拉取最新数据'); }
 
 function onConfigChange(key, value) {
   pywebview.api.set_config(key, value);
-  showToast('⚙️ 已保存: ' + key);
+  showToast('设置已保存: ' + key);
 }
 
 // ============================================================
@@ -779,18 +844,18 @@ function refreshHistory() {
   pywebview.api.get_history().then(function(data) {
     var tbody = document.getElementById('historyBody');
     if (!data || data.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="4">暂无记录</td></tr>';
+      tbody.innerHTML = '<tr class="empty"><td colspan="4">暂无记录 — 查询或复制股票代码后自动显示</td></tr>';
       return;
     }
     var rows = '';
-    data.forEach(function(r) {
-      var cls = 'status-' + (r.status || 'pending');
-      var icons = {success:'✅', error:'❌', cached:'📦', pending:'⏳'};
-      var label = (icons[r.status] || '⏳') + ' ' + (r.message || r.status);
-      var name = r.name || '-';
-      rows += '<tr><td>' + r.time + '</td><td>' + r.code + '</td><td>' + name + '</td>'
-            + '<td class="' + cls + '">' + label + '</td></tr>';
-    });
+    for (var i = 0; i < data.length; i++) {
+      var r = data[i];
+      var icons = {success: 'ok', error: 'err', cached: 'cache', pending: 'pend'};
+      var labels = {success: '成功', error: '失败', cached: '缓存', pending: '排队中'};
+      var cls = 'status-' + (icons[r.status] || 'pend');
+      var label = (labels[r.status] || r.status) + ' ' + (r.message || '');
+      rows += '<tr><td>' + r.time + '</td><td>' + r.code + '</td><td>' + (r.name || '-') + '</td><td class="' + cls + '">' + label + '</td></tr>';
+    }
     tbody.innerHTML = rows;
   });
 }
@@ -801,17 +866,23 @@ function refreshStatus() {
     var text = document.getElementById('statusText');
     if (status === 'fetching') {
       dot.className = 'status-dot fetching';
-      text.textContent = '⏳ 拉取数据中…';
+      text.textContent = '正在拉取数据… 请稍候';
     } else {
-      dot.className = 'status-dot monitoring';
-      text.textContent = '🟢 剪贴板监控中…';
+      pywebview.api.is_monitoring().then(function(on) {
+        if (on) {
+          dot.className = 'status-dot on';
+          text.textContent = '剪贴板监控运行中 — 在股票软件复制代码即可自动识别';
+        } else {
+          dot.className = 'status-dot off';
+          text.textContent = '剪贴板监控已暂停 — 可使用上方搜索框手动查询';
+        }
+      });
     }
   });
-  // Also refresh result detail in case clipboard trigger updated it
-  if (!_pollFast) {
+  if (!window._pollFast) {
     pywebview.api.get_last_result_detail().then(function(detail) {
       if (detail && detail.meta && detail.meta.code) {
-        _currentResult = detail;
+        window._currentResult = detail;
         renderResultCard(detail);
       }
     });
@@ -820,16 +891,17 @@ function refreshStatus() {
 
 function loadConfig() {
   pywebview.api.get_config().then(function(cfg) {
-    if (cfg) {
-      if (cfg.output_format) document.getElementById('outputFormat').value = cfg.output_format;
-      if (cfg.default_count) document.getElementById('defaultCount').value = cfg.default_count;
-      if (cfg.poll_interval !== undefined) document.getElementById('pollInterval').value = cfg.poll_interval;
-      if (cfg.cache_ttl !== undefined) document.getElementById('cacheTTL').value = cfg.cache_ttl;
-    }
+    if (!cfg) return;
+    if (cfg.output_format) document.getElementById('outputFormat').value = cfg.output_format;
+    if (cfg.default_count) document.getElementById('defaultCount').value = cfg.default_count;
+    if (cfg.poll_interval !== undefined) document.getElementById('pollInterval').value = cfg.poll_interval;
+    if (cfg.cache_ttl !== undefined) document.getElementById('cacheTTL').value = cfg.cache_ttl;
+    if (cfg.save_directory !== undefined) document.getElementById('saveDirectory').value = cfg.save_directory || '';
   });
-  // Sync clipboard toggle
   pywebview.api.is_monitoring().then(function(on) {
-    document.getElementById('clipboardToggle').checked = on;
+    var el = document.getElementById('clipboardToggle');
+    if (on) { el.classList.add('on'); }
+    else { el.classList.remove('on'); }
   });
 }
 
@@ -841,31 +913,23 @@ function showToast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(el._timeout);
-  el._timeout = setTimeout(function() { el.classList.remove('show'); }, 2000);
+  el._timeout = setTimeout(function() { el.classList.remove('show'); }, 3000);
 }
 
 // ============================================================
 // Init
 // ============================================================
-setInterval(function() {
-  refreshHistory();
-  refreshStatus();
-}, 3000);
+setInterval(function() { refreshHistory(); refreshStatus(); }, 3000);
 
-document.addEventListener('DOMContentLoaded', function() {
+(function init() {
   loadConfig();
   refreshHistory();
   refreshStatus();
-  // Try to load existing result
   pywebview.api.get_last_result_detail().then(function(detail) {
-    if (detail && detail.meta && detail.meta.code) {
-      _currentResult = detail;
-      renderResultCard(detail);
-    }
+    if (detail && detail.meta && detail.meta.code) { window._currentResult = detail; renderResultCard(detail); }
   });
-  // Focus search
-  setTimeout(function() { document.getElementById('searchInput').focus(); }, 300);
-});
+  setTimeout(function() { document.getElementById('searchInput').focus(); }, 400);
+})();
 </script>
 </body>
 </html>
@@ -891,6 +955,7 @@ class PanelAPI:
             "default_count": cfg.get("default_count", 250),
             "poll_interval": cfg.get("poll_interval", 0.5),
             "cache_ttl": cfg.get("cache_ttl", 300),
+            "save_directory": cfg.get("save_directory", ""),
         }
 
     def set_config(self, key: str, value: Any) -> None:
@@ -900,50 +965,27 @@ class PanelAPI:
         self._clipper.clear_cache()
 
     def toggle_clipboard_monitor(self) -> bool:
-        """Toggle clipboard monitoring. Returns new state (True=on)."""
         return self._clipper.toggle_clipboard_monitor()
 
     def is_monitoring(self) -> bool:
-        """Check if clipboard monitoring is active."""
         return self._clipper.is_monitoring()
 
     def get_status(self) -> str:
         return self._clipper.get_status()
 
     def get_last_result_detail(self) -> Optional[Dict[str, Any]]:
-        """Return detailed indicators/meta/summary of last fetch for the UI card."""
         return self._clipper.get_result_detail()
 
     def search_stock(self, code: str, period: str = "daily", save_mode: bool = False) -> Dict[str, Any]:
-        """Manually trigger a stock search from the panel search bar.
-
-        Args:
-            code: Raw input (may include #, W:, M: prefixes).
-            period: 'daily', 'weekly', or 'monthly'.
-            save_mode: If True, save to file instead of clipboard.
-
-        Returns:
-            Dict with 'success' bool and 'error' string if failed.
-        """
         from clipboard_monitor import parse_clipboard
-
-        # Strip whitespace
         code = code.strip()
-        # Try to parse with prefix notation
         request = parse_clipboard(code)
         if request:
-            actual_code = request.code
-            actual_period = request.period
-            actual_save = request.save_mode
+            actual_code, actual_period, actual_save = request.code, request.period, request.save_mode
         else:
-            # Plain 6-digit code
             if not code.isdigit() or len(code) != 6:
                 return {"success": False, "error": "无效的股票代码，请输入6位数字"}
-            actual_code = code
-            actual_period = period
-            actual_save = save_mode
-
-        # Override period from dropdown if user explicitly selected non-daily
+            actual_code, actual_period, actual_save = code, period, save_mode
         if period != "daily" and actual_period == "daily":
             actual_period = period
         if save_mode:
@@ -951,7 +993,6 @@ class PanelAPI:
 
         result = self._clipper.fetch_manual(actual_code, actual_period)
 
-        # If save mode, modify the request before queuing
         if actual_save:
             from clipboard_monitor import StockRequest
             try:
@@ -966,12 +1007,10 @@ class PanelAPI:
         return {"success": True}
 
     def copy_last_json(self) -> Dict[str, Any]:
-        """Copy the last result's full JSON to clipboard."""
         import pyperclip
         last = self._clipper.get_last_result()
         if last is None:
             return {"success": False, "error": "暂无数据"}
-
         cache_key = self._clipper._cache.make_key(last.code, last.period)
         cached_json = self._clipper._cache.get(cache_key)
         if cached_json:
@@ -980,40 +1019,33 @@ class PanelAPI:
         return {"success": False, "error": "缓存已过期，请重新查询"}
 
     def save_last_to_file(self) -> Dict[str, Any]:
-        """Save the last result's JSON to a file."""
-        import pyperclip
-        import os
-        import time
-
         last = self._clipper.get_last_result()
         if last is None:
             return {"success": False, "error": "暂无数据"}
-
         cache_key = self._clipper._cache.make_key(last.code, last.period)
         cached_json = self._clipper._cache.get(cache_key)
         if not cached_json:
             return {"success": False, "error": "缓存已过期，请重新查询"}
-
         data = json.loads(cached_json)
         name = data["meta"].get("name", "未知")
         safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "")
         date_str = time.strftime("%Y%m%d")
         filename = f"{last.code}_{safe_name}_{date_str}.json"
-        filepath = os.path.join(os.getcwd(), filename)
-
+        save_dir = self._clipper._config.get("save_directory", "")
+        if save_dir and os.path.isdir(save_dir):
+            filepath = os.path.join(save_dir, filename)
+        else:
+            filepath = os.path.join(os.getcwd(), filename)
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(cached_json)
-
         return {"success": True, "filename": filename}
 
     def quick_analysis_prompt(self) -> Dict[str, Any]:
-        """Generate a generic quick analysis prompt from last result."""
         import pyperclip
-
         detail = self._clipper.get_result_detail()
         if not detail or not detail.get("meta") or not detail["meta"].get("code"):
-            return {"success": False, "error": "暂无股票数据，请先查询或复制股票代码"}
-
+            return {"success": False, "error": "暂无股票数据，请先在搜索框输入代码查询"}
         try:
             from formula_prompt import generate_quick_prompt
             prompt = generate_quick_prompt(
@@ -1028,22 +1060,12 @@ class PanelAPI:
             return {"success": False, "error": str(e)}
 
     def generate_prompt(self, formula_text: str) -> Dict[str, Any]:
-        """Generate AI prompt from TDX formula text.
-
-        Args:
-            formula_text: User-pasted TDX formula.
-
-        Returns:
-            Dict with 'success' bool and 'error' string (if failed).
-        """
         try:
             from formula_prompt import generate_prompt
             import pyperclip
-
             detail = self._clipper.get_result_detail()
             if not detail or not detail.get("meta") or not detail["meta"].get("code"):
-                return {"success": False, "error": "暂无股票数据，请先查询或复制股票代码"}
-
+                return {"success": False, "error": "暂无股票数据，请先在搜索框输入代码查询"}
             prompt = generate_prompt(
                 formula=formula_text,
                 stock_code=detail["meta"]["code"],
@@ -1051,7 +1073,6 @@ class PanelAPI:
                 indicators=detail.get("indicators", {}),
                 summary=detail.get("summary", {}),
             )
-
             pyperclip.copy(prompt)
             return {"success": True}
         except Exception as e:
@@ -1066,18 +1087,9 @@ _panel_lock = threading.Lock()
 
 
 def show_panel(clipper: "StockClipper") -> None:
-    """Show or focus the info panel.
-
-    Creates a new PyWebView window if one doesn't exist, otherwise
-    brings the existing window to front.
-
-    Args:
-        clipper: StockClipper instance for API access.
-    """
+    """Show or focus the info panel."""
     global _panel_window
-
     with _panel_lock:
-        # If window exists, try to bring it to front
         if _panel_window is not None:
             try:
                 _panel_window.show()
@@ -1086,19 +1098,17 @@ def show_panel(clipper: "StockClipper") -> None:
             except Exception:
                 _panel_window = None
 
-        # Create new window
         api = PanelAPI(clipper)
         _panel_window = webview.create_window(
             title="Stock JSON Clipper V2.0",
             html=PANEL_HTML,
-            width=480,
-            height=680,
+            width=540,
+            height=720,
             resizable=True,
             on_top=False,
             js_api=api,
         )
 
-        # Start webview in a daemon thread so it doesn't block tray
         def _on_closed():
             global _panel_window
             _panel_window = None
