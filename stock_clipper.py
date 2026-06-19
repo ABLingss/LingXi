@@ -32,7 +32,7 @@ from indicators import calc_all_indicators
 class FetchResult:
     """Result of a single stock fetch operation for display in the info panel."""
 
-    __slots__ = ("timestamp", "code", "name", "status", "period", "count", "message")
+    __slots__ = ("timestamp", "code", "name", "status", "period", "count", "message", "cache_key")
 
     def __init__(
         self,
