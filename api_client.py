@@ -1,47 +1,56 @@
 """
-api_client.py — East Money (东方财富) public API wrapper for Stock JSON Clipper.
+api_client.py — Multi-source A-share data API wrapper for Stock JSON Clipper V2.0.
 
-Data sources (sole — see spec §4.2):
-  - K-line: http://push2his.eastmoney.com/api/qt/stock/kline/get
-  - Stock info: http://push2.eastmoney.com/api/qt/stock/get
+Data sources (tried in order until one succeeds):
+  1. Tencent (腾讯财经) — K-line + stock name, supports day/week/month
+  2. Sina (新浪财经) — K-line, fast & reliable
+  3. East Money (东方财富) — K-line + full stock info (PE, industry, market cap)
 
-All functions return parsed dicts/lists or raise StockError on failure.
+All functions return standardized dicts/lists or raise StockError on all-source failure.
+
+Provider-specific URLs:
+  Tencent K-line: web.ifzq.gtimg.cn/appstock/app/fqkline/get
+  Tencent info:   qt.gtimg.cn/q={sz/sh}{code}
+  Sina K-line:    money.finance.sina.com.cn/quotes_service/api/json_v2.php
+  East Money:     push2his.eastmoney.com + push2.eastmoney.com (may be unavailable)
 """
 
 import json
-import time
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional
 
 import requests
 
 
-# --- Constants ---
-KLINE_URL = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
-STOCK_INFO_URL = "http://push2.eastmoney.com/api/qt/stock/get"
+# ============================================================
+# Constants
+# ============================================================
 
-# Period → klt parameter mapping
-PERIOD_MAP = {
-    "daily": 101,
-    "weekly": 102,
-    "monthly": 103,
-}
-
-# Default request timeout (seconds)
-DEFAULT_TIMEOUT = 5
-
-# User-agent to avoid being blocked
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Referer": "http://quote.eastmoney.com/",
+}
+
+DEFAULT_TIMEOUT = 5
+REQUEST_PROXIES = {"http": None, "https": None}  # direct connection, no proxy
+
+# Period mapping: internal → Tencent / Sina / EastMoney
+PERIOD_MAP = {
+    "daily":   {"tencent": "day",   "sina_scale": 240,  "em_klt": 101},
+    "weekly":  {"tencent": "week",  "sina_scale": 1200, "em_klt": 102},
+    "monthly": {"tencent": "month", "sina_scale": 7200, "em_klt": 103},
 }
 
 
+# ============================================================
+# Error type
+# ============================================================
+
 class StockError(Exception):
-    """Raised when stock data cannot be fetched (invalid code, timeout, etc.)."""
+    """Raised when stock data cannot be fetched from any source."""
 
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -49,95 +58,232 @@ class StockError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
-# --- Market detection ---
-def determine_market(code: str) -> Dict[str, str]:
-    """Determine market (沪市/深市) and secid prefix for a 6-digit A-share code.
+# ============================================================
+# Market helpers
+# ============================================================
 
-    Rules:
-      - 60xxxx, 688xxx → 沪市 (Shanghai), secid prefix "1"
-      - 00xxxx, 30xxxx, 002xxx, 003xxx → 深市 (Shenzhen), secid prefix "0"
-
-    Args:
-        code: 6-digit stock code string.
-
-    Returns:
-        Dict with keys: 'market' ('沪市'|'深市'), 'secid_pre' ('1'|'0').
-    """
-    if code.startswith(("60", "68")):
-        return {"market": "沪市", "secid_pre": "1"}
-    else:
-        # 00xxxx, 30xxxx (including 002, 003 SME/GEM varieties)
-        return {"market": "深市", "secid_pre": "0"}
+def _is_sh(code: str) -> bool:
+    """Check if a 6-digit A-share code belongs to Shanghai (沪市)."""
+    return code.startswith(("60", "68"))
 
 
-def make_secid(code: str, use_kline_prefix: bool = True) -> str:
-    """Build East Money secid parameter from 6-digit stock code.
+def _market_prefix(code: str) -> str:
+    """Return 'sh' or 'sz' for the given 6-digit stock code."""
+    return "sh" if _is_sh(code) else "sz"
 
-    Args:
-        code: 6-digit stock code.
-        use_kline_prefix: If True, use K-line API prefix (1. for SH, 0. for SZ).
-                          Stock info API also uses same prefix system.
 
-    Returns:
-        secid string like "1.000001" or "0.000001".
-    """
-    pre = determine_market(code)["secid_pre"]
+def _em_secid(code: str) -> str:
+    """Build East Money secid: '1.000001' (SH) or '0.000001' (SZ)."""
+    pre = "1" if _is_sh(code) else "0"
     return f"{pre}.{code}"
 
 
-# --- K-line API ---
-def fetch_kline(
-    code: str,
-    period: str = "daily",
-    count: int = 250,
-    timeout: int = DEFAULT_TIMEOUT,
-) -> List[Dict[str, Any]]:
-    """Fetch historical K-line data from East Money.
+# ============================================================
+# Provider: Tencent (腾讯财经)
+# ============================================================
 
-    Args:
-        code: 6-digit stock code (e.g. '000001').
-        period: 'daily', 'weekly', or 'monthly'.
-        count: Number of bars to fetch (default 250; set large for full history).
-        timeout: Request timeout in seconds.
+def _tct_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[str, Any]]:
+    """Fetch K-line from Tencent Finance.
 
-    Returns:
-        List of OHLCV dicts, each with keys:
-          date, open, high, low, close, volume, amount, amplitude, change_pct, change, turnover.
-        Ordered oldest-first.
-
-    Raises:
-        StockError: On network error, invalid response, or empty data.
+    URL: web.ifzq.gtimg.cn/appstock/app/fqkline/get
+    Response format:
+      data.{prefix}{code}.qfq{period} → [[date, open, close, high, low, volume], ...]
     """
-    klt = PERIOD_MAP.get(period, 101)
-    secid = make_secid(code, use_kline_prefix=True)
+    prefix = _market_prefix(code)
+    tct_period = PERIOD_MAP[period]["tencent"]
+    param = f"{prefix}{code},{tct_period},,,{count},qfq"
+
+    resp = requests.get(
+        "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+        params={"param": param},
+        headers=HEADERS,
+        timeout=timeout,
+        proxies=REQUEST_PROXIES,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if data.get("code") != 0:
+        raise StockError(code, "腾讯API返回错误")
+
+    symbol = f"{prefix}{code}"
+    kline_key = f"qfq{tct_period}"
+    raw_bars = data.get("data", {}).get(symbol, {}).get(kline_key, [])
+
+    if not raw_bars:
+        raise StockError(code, "腾讯API无K线数据")
+
+    result: List[Dict[str, Any]] = []
+    for bar in raw_bars:
+        # [date, open, close, high, low, volume]
+        if len(bar) < 6:
+            continue
+        result.append({
+            "date": str(bar[0]).strip(),
+            "open": _safe_float(bar[1]),
+            "close": _safe_float(bar[2]),
+            "high": _safe_float(bar[3]),
+            "low": _safe_float(bar[4]),
+            "volume": int(_safe_float(bar[5])),
+            "amount": 0.0,
+            "amplitude": 0.0,
+            "change_pct": 0.0,
+            "change": 0.0,
+            "turnover": 0.0,
+        })
+
+    return result
+
+
+def _tct_stock_info(code: str, timeout: int) -> Dict[str, Any]:
+    """Fetch basic stock info (name, PE, market cap) from Tencent qt API.
+
+    URL: qt.gtimg.cn/q={sz/sh}{code}
+    Response: tilde-separated GBK-encoded key-value string.
+      Field 1:  stock name
+      Field 39: PE (TTM)
+      Field 72: total market cap (总市值)
+      Field 73: float market cap (流通市值)
+    """
+    prefix = _market_prefix(code)
+    resp = requests.get(
+        "http://qt.gtimg.cn/",
+        params={"q": f"{prefix}{code}"},
+        headers=HEADERS,
+        timeout=timeout,
+        proxies=REQUEST_PROXIES,
+    )
+    resp.raise_for_status()
+
+    # Tencent qt API returns GBK-encoded data; requests auto-detects via charset
+    raw = resp.text
+
+    # Parse tilde-separated format: v_sz000001="field0~field1~..."
+    match = re.search(r'="([^"]*)"', raw)
+    if not match:
+        raise StockError(code, "腾讯股票信息格式异常")
+
+    fields = match.group(1).split("~")
+    if len(fields) < 10:
+        raise StockError(code, "腾讯股票信息字段不足")
+
+    name = fields[1].strip() if len(fields) > 1 else "未知"
+    # Field 39 = PE(TTM), e.g. 4.74 for 平安银行
+    pe_ttm = _safe_float(fields[39] if len(fields) > 39 else None, -1.0)
+    # Field 72 = total market cap (总市值), 73 = float market cap (流通市值)
+    total_mv = _safe_float(fields[72] if len(fields) > 72 else None, -1.0)
+    float_mv = _safe_float(fields[73] if len(fields) > 73 else None, -1.0)
+    # Use stock type field (GP-A) as industry placeholder; East Money gives real industry
+    industry = _safe_str(fields[61] if len(fields) > 61 else None, "")
+
+    return {
+        "name": name,
+        "pe_ttm": pe_ttm,
+        "total_mv": total_mv,
+        "float_mv": float_mv,
+        "industry": industry,
+        "list_date": "",
+    }
+
+
+# ============================================================
+# Provider: Sina (新浪财经)
+# ============================================================
+
+def _sina_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[str, Any]]:
+    """Fetch K-line from Sina Finance.
+
+    URL: money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData
+    Params: symbol={sz/sh}{code}, scale={240/1200/7200}, datalen={count}
+    Response: [{day, open, high, low, close, volume}, ...]
+    """
+    prefix = _market_prefix(code)
+    scale = PERIOD_MAP[period]["sina_scale"]
+
+    resp = requests.get(
+        "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "CN_MarketData.getKLineData",
+        params={
+            "symbol": f"{prefix}{code}",
+            "scale": scale,
+            "ma": "no",
+            "datalen": count,
+        },
+        headers=HEADERS,
+        timeout=timeout,
+        proxies=REQUEST_PROXIES,
+    )
+    resp.raise_for_status()
+
+    # Sina sometimes returns HTML error pages with 200 status
+    content_type = resp.headers.get("Content-Type", "")
+    if "html" in content_type.lower() or resp.text.strip().startswith("<"):
+        raise StockError(code, "新浪API返回非JSON数据")
+
+    raw_data = resp.json()
+    if not isinstance(raw_data, list):
+        raise StockError(code, "新浪API返回格式异常")
+
+    if not raw_data:
+        raise StockError(code, "新浪API无K线数据")
+
+    result: List[Dict[str, Any]] = []
+    for bar in raw_data:
+        result.append({
+            "date": str(bar.get("day", "")).strip(),
+            "open": _safe_float(bar.get("open")),
+            "close": _safe_float(bar.get("close")),
+            "high": _safe_float(bar.get("high")),
+            "low": _safe_float(bar.get("low")),
+            "volume": _safe_int(bar.get("volume")),
+            "amount": 0.0,
+            "amplitude": 0.0,
+            "change_pct": 0.0,
+            "change": 0.0,
+            "turnover": 0.0,
+        })
+
+    return result
+
+
+def _sina_stock_info(code: str, timeout: int) -> Dict[str, Any]:
+    """Sina doesn't have a dedicated stock info API we can use.
+    Always raises StockError to trigger fallback.
+    """
+    raise StockError(code, "新浪不支持股票信息查询")
+
+
+# ============================================================
+# Provider: East Money (东方财富)
+# ============================================================
+
+def _em_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[str, Any]]:
+    """Fetch K-line from East Money. May return 502 when service is down."""
+    secid = _em_secid(code)
+    klt = PERIOD_MAP[period]["em_klt"]
 
     params: Dict[str, Any] = {
         "secid": secid,
         "klt": klt,
-        "fqt": 1,  # 前复权 (forward-adjusted)
+        "fqt": 1,
         "lmt": count,
         "fields1": "f1,f2,f3,f4,f5,f6",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-        "end": "20500101",  # always fetch up to latest
-        "ut": "fa5fd1943c7b386f172d6893dbfc10f1",  # utility token (public)
+        "end": "20500101",
+        "ut": "fa5fd1943c7b386f172d6893dbfc10f1",
     }
 
-    try:
-        resp = requests.get(KLINE_URL, params=params, headers=HEADERS, timeout=timeout)
-        resp.raise_for_status()
-    except requests.Timeout:
-        raise StockError(code, "数据拉取超时，请检查网络")
-    except requests.ConnectionError:
-        raise StockError(code, "网络连接失败，请检查网络")
-    except requests.RequestException as e:
-        raise StockError(code, f"API请求失败: {e}")
+    resp = requests.get(
+        "http://push2his.eastmoney.com/api/qt/stock/kline/get",
+        params=params,
+        headers=HEADERS,
+        timeout=timeout,
+        proxies=REQUEST_PROXIES,
+    )
+    resp.raise_for_status()
 
-    try:
-        raw = resp.json()
-    except json.JSONDecodeError:
-        raise StockError(code, "API返回数据格式异常")
+    raw = resp.json()
 
-    # Check for API-level errors
     if raw.get("rc") != 0 and raw.get("data") is None:
         raise StockError(code, "股票代码无效或已退市")
 
@@ -149,8 +295,6 @@ def fetch_kline(
     if not klines_raw:
         raise StockError(code, "该股票无K线数据")
 
-    # Parse K-line strings
-    # Format: "日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率"
     result: List[Dict[str, Any]] = []
     for line in klines_raw:
         parts = line.split(",")
@@ -173,24 +317,9 @@ def fetch_kline(
     return result
 
 
-# --- Stock info API ---
-def fetch_stock_info(
-    code: str,
-    timeout: int = DEFAULT_TIMEOUT,
-) -> Dict[str, Any]:
-    """Fetch stock basic info (name, industry, PE, market cap, etc.) from East Money.
-
-    Args:
-        code: 6-digit stock code.
-        timeout: Request timeout in seconds.
-
-    Returns:
-        Dict with keys: name, industry, pe_ttm, total_mv, float_mv, list_date.
-
-    Raises:
-        StockError: On network error or invalid response.
-    """
-    secid = make_secid(code, use_kline_prefix=True)
+def _em_stock_info(code: str, timeout: int) -> Dict[str, Any]:
+    """Fetch full stock info from East Money. May return 502 when service is down."""
+    secid = _em_secid(code)
 
     params: Dict[str, Any] = {
         "secid": secid,
@@ -198,22 +327,16 @@ def fetch_stock_info(
         "ut": "fa5fd1943c7b386f172d6893dbfc10f1",
     }
 
-    try:
-        resp = requests.get(
-            STOCK_INFO_URL, params=params, headers=HEADERS, timeout=timeout
-        )
-        resp.raise_for_status()
-    except requests.Timeout:
-        raise StockError(code, "获取股票信息超时，请检查网络")
-    except requests.ConnectionError:
-        raise StockError(code, "网络连接失败，请检查网络")
-    except requests.RequestException as e:
-        raise StockError(code, f"API请求失败: {e}")
+    resp = requests.get(
+        "http://push2.eastmoney.com/api/qt/stock/get",
+        params=params,
+        headers=HEADERS,
+        timeout=timeout,
+        proxies=REQUEST_PROXIES,
+    )
+    resp.raise_for_status()
 
-    try:
-        raw = resp.json()
-    except json.JSONDecodeError:
-        raise StockError(code, "股票信息API返回数据格式异常")
+    raw = resp.json()
 
     data_block = raw.get("data")
     if data_block is None:
@@ -229,20 +352,129 @@ def fetch_stock_info(
     }
 
 
-# --- Helpers ---
+# ============================================================
+# Public API with failover
+# ============================================================
+
+# Source order: prefer sources that give richest data first
+KLINE_SOURCES = [
+    ("Tencent", _tct_kline),      # K-line + name in qt
+    ("Sina", _sina_kline),        # Reliable, fast
+    ("EastMoney", _em_kline),     # Richest data (amount, turnover, etc.)
+]
+
+STOCK_INFO_SOURCES = [
+    ("Tencent", _tct_stock_info),      # Always available, gives name + PE
+    ("EastMoney", _em_stock_info),     # Full info when available
+    # Sina: no stock info
+]
+
+
+def fetch_kline(
+    code: str,
+    period: str = "daily",
+    count: int = 250,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> List[Dict[str, Any]]:
+    """Fetch historical K-line data from the first available source.
+
+    Tries sources in order: Tencent → Sina → EastMoney.
+    Returns standardized OHLCV list on first success.
+
+    Args:
+        code: 6-digit stock code.
+        period: 'daily', 'weekly', or 'monthly'.
+        count: Number of bars to fetch.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        List of OHLCV dicts ordered oldest-first.
+
+    Raises:
+        StockError: If ALL sources fail.
+    """
+    errors: List[str] = []
+
+    for src_name, src_func in KLINE_SOURCES:
+        try:
+            result = src_func(code, period, count, timeout)
+            if result:
+                return result
+            errors.append(f"{src_name}: empty data")
+        except StockError as e:
+            errors.append(f"{src_name}: {e.message}")
+        except requests.Timeout:
+            errors.append(f"{src_name}: timeout")
+        except requests.ConnectionError:
+            errors.append(f"{src_name}: connection error")
+        except requests.RequestException as e:
+            errors.append(f"{src_name}: {e}")
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            errors.append(f"{src_name}: parse error ({e})")
+
+    raise StockError(code, " | ".join(errors))
+
+
+def fetch_stock_info(
+    code: str,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> Dict[str, Any]:
+    """Fetch stock basic info from the first available source.
+
+    Tries sources in order: Tencent → EastMoney.
+    Returns standardized info dict on first success.
+
+    Args:
+        code: 6-digit stock code.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Dict with keys: name, industry, pe_ttm, total_mv, float_mv, list_date.
+
+    Raises:
+        StockError: If ALL sources fail.
+    """
+    errors: List[str] = []
+
+    for src_name, src_func in STOCK_INFO_SOURCES:
+        try:
+            result = src_func(code, timeout)
+            if result and result.get("name") and result["name"] != "未知":
+                return result
+            if result:
+                errors.append(f"{src_name}: name is empty")
+                continue
+        except StockError as e:
+            errors.append(f"{src_name}: {e.message}")
+        except requests.Timeout:
+            errors.append(f"{src_name}: timeout")
+        except requests.ConnectionError:
+            errors.append(f"{src_name}: connection error")
+        except requests.RequestException as e:
+            errors.append(f"{src_name}: {e}")
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            errors.append(f"{src_name}: parse error ({e})")
+
+    raise StockError(code, " | ".join(errors))
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float, returning default on failure."""
+    """Safely convert a value to float."""
     if value is None:
         return default
     try:
         val = float(value)
-        return val if val == val else default  # NaN check
+        return val if val == val else default
     except (ValueError, TypeError):
         return default
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    """Safely convert a value to int, returning default on failure."""
+    """Safely convert a value to int."""
     if value is None:
         return default
     try:
@@ -252,17 +484,21 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _safe_str(value: Any, default: str = "") -> str:
-    """Safely convert a value to string, returning default on failure."""
+    """Safely convert a value to string."""
     if value is None:
         return default
-    return str(value).strip() or default
+    s = str(value).strip()
+    return s if s else default
 
 
 def _safe_date(value: Any, default: str = "") -> str:
-    """Convert East Money date value (int like 20260619) to ISO string."""
+    """Convert East Money date value (int) to ISO date string."""
     if value is None or value == "-" or value == "":
         return default
-    s = str(int(float(value)))
-    if len(s) == 8:
-        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
-    return s
+    try:
+        s = str(int(float(value)))
+        if len(s) == 8:
+            return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    except (ValueError, TypeError):
+        pass
+    return default
