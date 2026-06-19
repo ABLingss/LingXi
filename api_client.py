@@ -35,7 +35,6 @@ HEADERS = {
 }
 
 DEFAULT_TIMEOUT = 5
-REQUEST_PROXIES = {"http": None, "https": None}  # direct connection, no proxy
 
 # Period mapping: internal → Tencent / Sina / EastMoney
 PERIOD_MAP = {
@@ -98,7 +97,6 @@ def _tct_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[st
         params={"param": param},
         headers=HEADERS,
         timeout=timeout,
-        proxies=REQUEST_PROXIES,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -158,7 +156,6 @@ def _tct_stock_info(code: str, timeout: int) -> Dict[str, Any]:
         params={"q": f"{prefix}{code}"},
         headers=HEADERS,
         timeout=timeout,
-        proxies=REQUEST_PROXIES,
     )
     resp.raise_for_status()
 
@@ -218,7 +215,6 @@ def _sina_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[s
         },
         headers=HEADERS,
         timeout=timeout,
-        proxies=REQUEST_PROXIES,
     )
     resp.raise_for_status()
 
@@ -285,7 +281,6 @@ def _em_kline(code: str, period: str, count: int, timeout: int) -> List[Dict[str
         params=params,
         headers=HEADERS,
         timeout=timeout,
-        proxies=REQUEST_PROXIES,
     )
     resp.raise_for_status()
 
@@ -339,7 +334,6 @@ def _em_stock_info(code: str, timeout: int) -> Dict[str, Any]:
         params=params,
         headers=HEADERS,
         timeout=timeout,
-        proxies=REQUEST_PROXIES,
     )
     resp.raise_for_status()
 
