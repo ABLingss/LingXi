@@ -88,7 +88,7 @@ if [ "$(uname -s)" = "Linux" ]; then
     CONSOLE_FLAG="--noconsole"
 elif [ "$(uname -s)" = "Darwin" ]; then
     echo "  Target: macOS"
-    CONSOLE_FLAG="--windowed"
+    CONSOLE_FLAG=""
     HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import Foundation --hidden-import AppKit --hidden-import objc"
 else
     # Windows (MSYS2/Cygwin) or native Windows
@@ -109,7 +109,10 @@ echo ""
 echo "[3/3] Checking output..."
 echo ""
 
-if [ -f "dist/${NAME}" ]; then
+if [ -f "dist/${NAME}" ] && [ "$(uname -s)" = "Darwin" ]; then
+    SIZE=$(du -h "dist/${NAME}" | cut -f1)
+    echo "✅ macOS executable: dist/${NAME} (${SIZE})"
+elif [ -f "dist/${NAME}" ] && [ "$(uname -s)" = "Linux" ]; then
     SIZE=$(du -h "dist/${NAME}" | cut -f1)
     echo "✅ Linux executable: dist/${NAME} (${SIZE})"
 elif [ -f "dist/${NAME}.exe" ]; then

@@ -11,15 +11,29 @@ A股数据与AI分析之间的桥梁。复制股票代码即可生成结构化JS
 从 [Releases](https://github.com/ABLingss/Stock-JSON-Clipper/releases) 下载最新版本：
 
 - **Windows 10/11**: 下载 `StockJSONClipper.exe`（单文件，双击运行）
-- **macOS**: 下载 `StockJSONClipper.app`
+- **macOS (Apple Silicon)**: 下载 `StockJSONClipper`（单文件可执行程序）
 
 > Windows 用户若杀毒软件报警，请添加白名单。本程序无恶意行为，代码完全开源。
+
+### macOS 使用步骤
+
+由于未经过 Apple 公证（需 $99/年开发者账号），首次运行需执行以下命令：
+
+```bash
+# 1. 添加执行权限
+chmod +x ~/Downloads/StockJSONClipper
+
+# 2. 清除 Gatekeeper 隔离标记（如果是 .app 格式）
+xattr -d com.apple.quarantine ~/Downloads/StockJSONClipper.app
+```
+
+然后双击 `StockJSONClipper` 即可运行。macOS 会提示"无法验证开发者"，点击 **系统设置 → 隐私与安全性 → 仍要打开** 确认即可。仅首次需要。
 
 ## 使用方法
 
 ### 1. 启动程序
 
-双击 `StockJSONClipper.exe`，程序会在系统托盘（屏幕右下角）显示图标。
+双击 `StockJSONClipper.exe`（Windows）或 `StockJSONClipper`（macOS），程序会在系统托盘显示图标。macOS 首次启动需在系统设置中允许。
 
 ### 2. 获取数据
 
