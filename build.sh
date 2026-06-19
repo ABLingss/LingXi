@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh — PyInstaller build script for Stock JSON Clipper V1.0
+# build.sh — PyInstaller build script for Stock JSON Clipper V2.0
 #
 # Produces single-file executables for the current platform.
 #
@@ -19,7 +19,7 @@ NAME="StockJSONClipper"
 ENTRY="main.py"
 
 echo "============================================"
-echo " Building Stock JSON Clipper V1.0"
+echo " Building Stock JSON Clipper V2.0"
 echo " Platform: $(uname -s)"
 echo "============================================"
 echo ""
@@ -36,36 +36,62 @@ fi
 # Clean previous builds
 rm -rf build dist *.spec
 
-echo "[1/3] Checking Python..."
-PYTHON=$(which python3.9 2>/dev/null || which python3 2>/dev/null)
+echo "[1/3] Checking Python & dependencies..."
+PYTHON=$(which python3.9 2>/dev/null || which python3 2>/dev/null || which python 2>/dev/null)
 echo "  Using: $PYTHON"
 $PYTHON --version
 
+# Ensure critical deps are installed
+MISSING=""
+for pkg in pyinstaller pyperclip pystray pywebview requests Pillow; do
+    if ! $PYTHON -c "import ${pkg//-/_}" 2>/dev/null; then
+        MISSING="$MISSING $pkg"
+    fi
+done
+if [ -n "$MISSING" ]; then
+    echo "  Installing missing packages:$MISSING"
+    $PYTHON -m pip install $MISSING
+fi
+echo "  All dependencies OK."
+
 echo ""
 echo "[2/3] Running PyInstaller..."
-echo "  This produces a single-file executable (~10-15MB)."
+echo "  This produces a single-file executable (~22MB)."
 echo ""
 
-# Platform-specific settings
-HIDDEN_IMPORTS="--hidden-import pystray._win32 --hidden-import pystray._xorg --hidden-import pystray._darwin"
-HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import PIL.Image --hidden-import PIL.ImageDraw"
+# Hidden imports — ensure PyInstaller bundles these modules
+HIDDEN_IMPORTS=""
+# pystray platform backends
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import pystray._win32"
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import pystray._xorg"
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import pystray._darwin"
+# PIL (for tray icon generation)
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import PIL.Image"
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import PIL.ImageDraw"
+# webview platform backends
 HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import webview.platforms.cef"
 HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import webview.platforms.gtk"
 HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import webview.platforms.cocoa"
 HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import webview.platforms.winforms"
+# pyperclip (clipboard access — MUST be bundled for app to work)
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import pyperclip"
+# stdlib modules sometimes missed by PyInstaller analysis
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import json"
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import queue"
+HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import threading"
 
+# Exclude heavy packages we don't use (shrinks binary significantly)
 EXCLUDE="--exclude-module numpy --exclude-module pandas --exclude-module matplotlib --exclude-module scipy --exclude-module tkinter"
 
 if [ "$(uname -s)" = "Linux" ]; then
     echo "  Target: Linux"
-    CONSOLE_FLAG="--noconsole"  # Linux ignores this, but include for consistency
+    CONSOLE_FLAG="--noconsole"
 elif [ "$(uname -s)" = "Darwin" ]; then
     echo "  Target: macOS"
     CONSOLE_FLAG="--windowed"
-    # macOS bundles need special handling for pystray
     HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import Foundation --hidden-import AppKit --hidden-import objc"
 else
-    # Windows (MINGW/Cygwin) or native Windows
+    # Windows (MSYS2/Cygwin) or native Windows
     echo "  Target: Windows"
     CONSOLE_FLAG="--noconsole"
 fi
@@ -104,8 +130,9 @@ echo "============================================"
 echo " Build complete!"
 echo ""
 echo " Release checklist:"
-echo "  [ ] Test on target platform"
-echo "  [ ] Verify clipboard monitoring works"
-echo "  [ ] Verify #save mode creates files"
-echo "  [ ] Verify panel opens from tray"
+echo "  [ ] Run exe — verify no ModuleNotFoundError"
+echo "  [ ] Test clipboard monitoring (copy 000001)"
+echo "  [ ] Test panel search (type code in panel)"
+echo "  [ ] Test #save mode creates files"
+echo "  [ ] Verify panel opens from tray icon"
 echo "============================================"

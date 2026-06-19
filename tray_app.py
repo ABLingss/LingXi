@@ -1,5 +1,5 @@
 """
-tray_app.py — System tray icon and menu for Stock JSON Clipper V1.0.
+tray_app.py — System tray icon and menu for Stock JSON Clipper V2.0.
 
 Uses pystray + PIL to create a tray icon with right-click menu:
   - Show Panel
@@ -126,7 +126,7 @@ def run_tray(clipper: "StockClipper") -> None:
     icon = pystray.Icon(
         name="StockJSONClipper",
         icon=icon_image,
-        title="Stock JSON Clipper V1.0",
+        title="Stock JSON Clipper V2.0",
     )
 
     # Build menu with reference to icon (for notifications)

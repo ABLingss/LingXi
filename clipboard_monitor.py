@@ -1,11 +1,11 @@
-"""
+r"""
 clipboard_monitor.py — Clipboard polling and stock code parsing for Stock JSON Clipper.
 
 Polls the system clipboard every 0.5 seconds, matches A-share stock codes
 against the defined pattern, and fires a callback when a valid code is found.
 Includes deduplication: same code won't re-trigger within 2 seconds.
 
-Pattern: ^([#]?)([WM]:)?(\d{6})$
+Pattern: ^([#]?)([WM]:)?(\\d{6})$
   - #  → save-to-file mode
   - W: → weekly K-line
   - M: → monthly K-line

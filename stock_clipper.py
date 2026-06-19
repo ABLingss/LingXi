@@ -1,5 +1,5 @@
 """
-stock_clipper.py — Core orchestrator for Stock JSON Clipper V1.0.
+stock_clipper.py — Core orchestrator for Stock JSON Clipper V2.0.
 
 Ties together clipboard monitoring, API fetching, indicator calculation,
 JSON assembly, cache management, file saving, and UI notifications.
@@ -392,6 +392,42 @@ class StockClipper:
     def get_last_result(self) -> Optional[FetchResult]:
         """Get the most recent fetch result."""
         return self._last_result
+
+    def get_result_detail(self) -> Optional[Dict[str, Any]]:
+        """Get detailed info from the last fetch result for panel display.
+
+        Returns the raw cached JSON data (meta, indicators, summary) of the
+        most recent fetch, suitable for rendering the result card in the UI.
+
+        Returns:
+            Dict with 'meta', 'indicators', 'summary' keys, or None if no data.
+        """
+        last = self._last_result
+        if last is None:
+            return None
+
+        cache_key = self._cache.make_key(last.code, last.period)
+        cached_json = self._cache.get(cache_key)
+        if cached_json:
+            try:
+                data = json.loads(cached_json)
+                return {
+                    "meta": data.get("meta", {}),
+                    "indicators": data.get("indicators", {}),
+                    "summary": data.get("summary", {}),
+                }
+            except json.JSONDecodeError:
+                pass
+
+        return {
+            "meta": {
+                "code": last.code,
+                "name": last.name,
+                "period": last.period,
+            },
+            "indicators": {},
+            "summary": {},
+        }
 
     def fetch_manual(self, code: str, period: str = "daily") -> FetchResult:
         """Manually trigger a fetch (used by panel search box).
