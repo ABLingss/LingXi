@@ -1,24 +1,39 @@
 """
-config.py — Configuration management for Stock JSON Clipper V1.0
+core.config — Configuration management for Stock JSON Clipper V2.1.
 Reads/writes config.ini using configparser.
-Creates default config.ini if missing.
+Creates default config.ini next to the executable (or project root in dev).
 """
 
 import os
+import sys
 import configparser
 from typing import Any, Dict
 
 # --- Default configuration ---
 DEFAULTS: Dict[str, Any] = {
-    "output_format": "json",       # json | markdown | csv (markdown/csv reserved)
-    "default_count": 250,          # default K-line bars to fetch (5 ~ full)
-    "poll_interval": 0.5,          # clipboard polling interval in seconds
-    "cache_ttl": 300,              # cache time-to-live in seconds (5 min)
-    "request_timeout": 5,          # API request timeout in seconds
-    "save_directory": "",          # save directory for JSON files (empty = cwd)
+    "output_format": "json",
+    "default_count": 250,
+    "poll_interval": 0.5,
+    "cache_ttl": 300,
+    "request_timeout": 5,
+    "save_directory": "",
 }
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+
+def _get_config_dir() -> str:
+    """Get the directory where config.ini should live.
+
+    PyInstaller (frozen): next to the .exe
+    Dev mode: project root (parent of core/ directory)
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    else:
+        # core/config.py → core/ → project root
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+CONFIG_PATH = os.path.join(_get_config_dir(), "config.ini")
 
 
 def load_config(config_path: str = CONFIG_PATH) -> Dict[str, Any]:
@@ -60,6 +75,11 @@ def save_config(cfg: Dict[str, Any], config_path: str = CONFIG_PATH) -> None:
         cfg: Config dict to save.
         config_path: Path to config.ini file.
     """
+    # Ensure directory exists (esp. for frozen bundles)
+    cfg_dir = os.path.dirname(config_path)
+    if cfg_dir:
+        os.makedirs(cfg_dir, exist_ok=True)
+
     parser = configparser.ConfigParser()
     parser.add_section("settings")
     for key, value in cfg.items():

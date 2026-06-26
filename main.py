@@ -133,7 +133,9 @@ def run_tray(args) -> None:
 
     # Register built-in feature modules
     from modules.prompt.formula import PromptModule
+    from modules.market_watch.watch import MarketWatchModule
     clipper.registry.register(PromptModule(), clipper)
+    clipper.registry.register(MarketWatchModule(), clipper)
 
     # Graceful shutdown on Ctrl+C
     def _shutdown(signum, frame):
