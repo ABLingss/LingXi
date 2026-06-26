@@ -1,8 +1,8 @@
-; Inno Setup Script for Stock JSON Clipper V3.1
+; Inno Setup Script for Stock JSON Clipper V3.2
 ; Produces a professional Windows installer (.exe)
 
 #define MyAppName "Stock JSON Clipper"
-#define MyAppVersion "3.1"
+#define MyAppVersion "3.2"
 #define MyAppPublisher "Stock JSON Clipper"
 #define MyAppURL "https://github.com/ABLingss/Stock-JSON-Clipper"
 #define MyAppExeName "StockJSONClipper.exe"
@@ -19,7 +19,7 @@ DefaultDirName={autopf}\StockJSONClipper
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=dist
-OutputBaseFilename=StockJSONClipper-Setup-V3.1
+OutputBaseFilename=StockJSONClipper-Setup-V3.2
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -36,9 +36,9 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "dist\StockJSONClipper.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Stock JSON Clipper V3.1"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Stock JSON Clipper V3.2"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall Stock JSON Clipper"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Stock JSON Clipper V3.1"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\Stock JSON Clipper V3.2"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Stock JSON Clipper"; Flags: nowait postinstall skipifsilent
