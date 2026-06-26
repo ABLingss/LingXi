@@ -1708,7 +1708,12 @@ class PanelAPI:
                     "indicators": it["indicators"], "summary": it["summary"]}
         return None
 
+    # ── V2 (legacy) prompt generators — keep for backward compatibility ──
+    # Future: migrate onSmartAnalyze() and onFullAnalyze() to call
+    # generate_analysis_package() (the V3 formula_engine) instead.
+
     def generate_prompt(self, formula_text: str) -> Dict[str, Any]:
+        """[V2 legacy] Generate AI prompt from TDX formula using old formatter."""
         import traceback, pyperclip
         try:
             detail = self._get_detail()
@@ -1723,6 +1728,7 @@ class PanelAPI:
             return {"success": False, "error": str(e), "detail": traceback.format_exc()}
 
     def quick_analysis_prompt(self) -> Dict[str, Any]:
+        """[V2 legacy] Generate quick analysis prompt (no formula) using old formatter."""
         import traceback, pyperclip
         try:
             detail = self._get_detail()
@@ -1733,6 +1739,66 @@ class PanelAPI:
                                            indicators=detail.get("indicators",{}), summary=detail.get("summary",{}))
             pyperclip.copy(prompt)
             return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e), "detail": traceback.format_exc()}
+
+    # ── V3 engine bridge ──
+
+    def generate_analysis_package(self, formula: str = "") -> Dict[str, Any]:
+        """[V3 engine] Generate a full AnalysisPackage using the formula_engine.
+
+        This is the new entry point for formula-based and general AI analysis.
+        Returns structured JSON that can be fed to an LLM API directly, or
+        formatted as a markdown prompt for copy-paste.
+
+        Args:
+            formula: Optional TDX formula string. If empty, uses deep-analysis mode.
+
+        Returns:
+            {"success": True, "json": ..., "prompt": ...} or {"success": False, "error": ...}
+        """
+        import traceback
+        try:
+            r = self._last_result
+            if not r:
+                return {"success": False, "error": "暂无数据，请先查询"}
+
+            from data.formula_engine import prepare
+
+            # Build klines_map and stock_info_map from the last result
+            klines_map: Dict[str, List] = {}
+            stock_info_map: Dict[str, Dict] = {}
+
+            if "meta" in r:
+                # Single stock mode
+                code = r["meta"]["code"]
+                klines_map[code] = r.get("data", [])
+                stock_info_map[code] = {
+                    "name": r["meta"].get("name", ""),
+                    "market": r["meta"].get("market", ""),
+                    "period": r["meta"].get("period", "daily"),
+                }
+            elif "items" in r:
+                # Comparison mode
+                for item in r["items"]:
+                    code = item["code"]
+                    klines_map[code] = item.get("klines", [])
+                    stock_info_map[code] = {
+                        "name": item.get("name", ""),
+                        "market": item.get("market", ""),
+                        "period": item.get("period", "daily"),
+                    }
+            else:
+                return {"success": False, "error": "未知的数据结构"}
+
+            pkg = prepare(klines_map, stock_info_map, formula=formula if formula.strip() else None)
+            return {
+                "success": True,
+                "json": pkg.to_json(),
+                "prompt": pkg.to_prompt(),
+                "scenario": pkg.scenario,
+                "warnings": pkg.warnings,
+            }
         except Exception as e:
             return {"success": False, "error": str(e), "detail": traceback.format_exc()}
 
