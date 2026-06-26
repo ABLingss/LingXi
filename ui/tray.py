@@ -142,15 +142,6 @@ def run_tray(clipper: "StockClipper", auto_show_panel: bool = False) -> None:
     # Build menu with reference to icon (for notifications)
     icon.menu = _create_menu(clipper, icon)
 
-    # Register notification callback
-    def notify_cb(title: str, message: str) -> None:
-        try:
-            icon.notify(message, title=title)
-        except Exception:
-            pass
-
-    clipper.set_notification_callback(notify_cb)
-
     # Run the tray (blocking on main thread)
     # Panel opens via right-click menu "显示面板" — runs on main thread naturally
     icon.run()
