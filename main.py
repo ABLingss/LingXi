@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Stock JSON Clipper V2.1 entry point.
+main.py — Stock JSON Clipper V2.2 entry point.
 
 Two modes:
   1. CLI mode:    python3.9 main.py --code 000001          (fetch & print JSON)
@@ -57,7 +57,7 @@ def run_cli(args) -> None:
                   "1min": "day", "5min": "day", "15min": "day", "30min": "day", "60min": "day"}
     sp = period_map.get(period, "day")
 
-    print(f"Stock JSON Clipper V3.0 (CLI)")
+    print(f"Stock JSON Clipper V3.2 (CLI)")
     print(f"   Code: {code}  |  Period: {period}  |  Count: {count}")
     print(f"{'=' * 50}")
 
@@ -118,7 +118,7 @@ def run_tray(args) -> None:
     """Tray mode: launch the full system tray application."""
     from ui.tray import run_tray
 
-    print("📈 Stock JSON Clipper V3.0")
+    print("📈 Stock JSON Clipper V3.2")
     print("   Starting system tray mode...")
     print("   Copy a 6-digit stock code (e.g. 000001) in any application.")
     print("   Right-click the tray icon for options.")
@@ -156,10 +156,10 @@ def run_tray(args) -> None:
 def main() -> None:
     # Initialize logging early
     init_logging()
-    log.info("Stock JSON Clipper V3.0 starting")
+    log.info("Stock JSON Clipper V3.2 starting")
 
     parser = argparse.ArgumentParser(
-        description="Stock JSON Clipper V3.0 — A-share stock data to AI-ready JSON",
+        description="Stock JSON Clipper V3.2 — A-share stock data to AI-ready JSON",
     )
     parser.add_argument(
         "--code", "-c",
