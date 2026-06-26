@@ -1042,6 +1042,7 @@ function showToast(msg) {
   var _lastHistory = '';
 
   function poll() {
+    if (typeof pywebview === 'undefined' || !pywebview.api) { _timer = setTimeout(poll, 200); return; }
     // Batch: refresh both in one rAF
     var doRefresh = function() {
       refreshStatus();
@@ -1095,25 +1096,37 @@ function showToast(msg) {
   });
 
   // Start
-  _timer = setTimeout(poll, 500);
+  // Delay first poll until pywebview is likely ready
+  _timer = setTimeout(poll, 800);
 })();
 
+// Safe API caller — waits for pywebview to be ready
+function _api(method) {
+  return function() {
+    var args = arguments;
+    if (typeof pywebview === 'undefined' || !pywebview.api) {
+      return Promise.reject(new Error('pywebview not ready'));
+    }
+    return pywebview.api[method].apply(pywebview.api, args);
+  };
+}
+
 (function init() {
-  // Diagnostic: verify bridge
-  pywebview.api.ping().then(function(r) {
-    console.log('[bridge] ping:', r);
-  }).catch(function(e) {
-    document.getElementById('statusText').textContent = 'BRIDGE ERROR: ' + (e && e.message ? e.message : String(e));
-    document.getElementById('statusDot').className = 'status-dot off';
+  function _ready(cb, retries) {
+    retries = retries || 0;
+    if (typeof pywebview !== 'undefined' && pywebview.api) { cb(); return; }
+    if (retries > 50) return; // give up after 5s
+    setTimeout(function() { _ready(cb, retries + 1); }, 100);
+  }
+  _ready(function() {
+    loadConfig();
+    refreshHistory();
+    refreshStatus();
+    pywebview.api.get_last_result_detail().then(function(detail) {
+      if (detail && detail.meta && detail.meta.code) { window._currentResult = detail; renderResultCard(detail); }
+    });
   });
-  // Defer non-critical init
-  setTimeout(function() { loadConfig(); }, 100);
-  refreshHistory();
-  refreshStatus();
-  pywebview.api.get_last_result_detail().then(function(detail) {
-    if (detail && detail.meta && detail.meta.code) { window._currentResult = detail; renderResultCard(detail); }
-  });
-  setTimeout(function() { document.getElementById('searchInput').focus(); }, 300);
+  setTimeout(function() { document.getElementById('searchInput').focus(); }, 400);
 })();
 
 // ============================================================
