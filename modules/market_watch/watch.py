@@ -31,10 +31,6 @@ class MarketWatchModule(BaseModule):
     def __init__(self):
         super().__init__()
         self._codes: List[str] = list(self.DEFAULT_CODES)
-        self._quotes: Dict[str, Dict] = {}
-        self._running = threading.Event()
-        self._poll_thread: Optional[threading.Thread] = None
-        self._interval = 3.0  # polling interval in seconds
 
     # ---- Lifecycle (lightweight — no background threads) ----
 

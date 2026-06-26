@@ -1,6 +1,6 @@
-#!/usr/bin/env python3.9
+#!/usr/bin/env python3
 """
-main.py — Stock JSON Clipper V2.0 entry point.
+main.py — Stock JSON Clipper V2.1 entry point.
 
 Two modes:
   1. CLI mode:    python3.9 main.py --code 000001          (fetch & print JSON)
@@ -32,7 +32,7 @@ if sys.stdout is not None and sys.stdout.encoding:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.logging_setup import init_logging, get_logger
-from core.config import load_config, save_config
+from core.config import load_config
 from core.clipper import StockClipper
 
 log = get_logger("main")
@@ -64,7 +64,7 @@ def run_cli(args) -> None:
     count = args.count if args.count is not None else cfg["default_count"]
     timeout = cfg.get("request_timeout", 5)
 
-    print(f"📈 Stock JSON Clipper V2.0 (CLI)")
+    print("📈 Stock JSON Clipper V2.1 (CLI)")
     print(f"   Code: {code}  |  Period: {period}  |  Count: {count}")
     print(f"{'─' * 50}")
 
@@ -122,7 +122,7 @@ def run_tray(args) -> None:
     """Tray mode: launch the full system tray application."""
     from ui.tray import run_tray
 
-    print("📈 Stock JSON Clipper V2.0")
+    print("📈 Stock JSON Clipper V2.1")
     print("   Starting system tray mode...")
     print("   Copy a 6-digit stock code (e.g. 000001) in any application.")
     print("   Right-click the tray icon for options.")

@@ -127,7 +127,7 @@ def run_tray(clipper: "StockClipper", auto_show_panel: bool = True) -> None:
     icon = pystray.Icon(
         name="StockJSONClipper",
         icon=icon_image,
-        title="Stock JSON Clipper V2.0",
+        title="Stock JSON Clipper V2.1",
     )
 
     # Build menu with reference to icon (for notifications)

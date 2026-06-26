@@ -597,7 +597,7 @@ PANEL_HTML = r"""
 <!-- MODULE_TABS -->
 
 <div class="toast" id="toast"></div>
-<div class="footer">Stock JSON Clipper V2.0 · 开源软件 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
+<div class="footer">Stock JSON Clipper V2.1 · GPL-3.0 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
 
 <script>
 // ============================================================

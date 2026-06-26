@@ -18,16 +18,15 @@ import queue
 import threading
 import time
 from collections import deque
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from api.client import fetch_kline, fetch_stock_info, StockError
 from core.cache import CacheManager
 from core.clipboard import ClipboardMonitor, StockRequest
-from core.config import load_config, save_config, update_config
+from core.config import load_config, update_config
 from core.logging_setup import get_logger
 from core.registry import ModuleRegistry
 from data.builder import build_json, to_json_string
-from data.indicators import calc_all_indicators
 
 log = get_logger("clipper")
 
@@ -404,7 +403,10 @@ class StockClipper:
     def set_config(self, key: str, value: Any) -> None:
         """Update a config value (persists to file)."""
         self._config[key] = value
-        update_config(key, value, self._config_path)
+        if self._config_path:
+            update_config(key, value, self._config_path)
+        else:
+            update_config(key, value)
 
     def clear_cache(self) -> None:
         """Clear the in-memory cache."""
