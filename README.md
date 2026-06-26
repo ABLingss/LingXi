@@ -1,64 +1,42 @@
-# Stock JSON Clipper V2.0
+# Stock JSON Clipper V2.1
 
 A股数据与AI分析之间的桥梁。复制股票代码即可生成结构化JSON，粘贴到ChatGPT/DeepSeek/Claude进行分析。
-
-## 这是什么
-
-在通达信、同花顺等股票软件中复制代码，自动拉取K线数据和技术指标，生成AI可直接理解的JSON格式。纯本地运行，无需安装Python或任何运行环境。
 
 ## 下载
 
 从 [Releases](https://github.com/ABLingss/Stock-JSON-Clipper/releases) 下载最新版本：
 
-- **Windows 10/11**: 下载 `StockJSONClipper.exe`（单文件，双击运行）
-- **macOS (Apple Silicon)**: 下载 `StockJSONClipper`（单文件可执行程序）
+- **Windows 10/11**: `StockJSONClipper.exe`（绿色免安装）或 `StockJSONClipper-Setup-V2.1.exe`（安装器）
+- **Linux**: 从源码运行（见下方）
 
-> Windows 用户若杀毒软件报警，请添加白名单。本程序无恶意行为，代码完全开源。
-
-### macOS 使用步骤
-
-由于未经过 Apple 公证（需 $99/年开发者账号），首次运行需执行以下命令：
-
-```bash
-# 1. 添加执行权限
-chmod +x ~/Downloads/StockJSONClipper
-
-# 2. 清除 Gatekeeper 隔离标记（如果是 .app 格式）
-xattr -d com.apple.quarantine ~/Downloads/StockJSONClipper.app
-```
-
-然后双击 `StockJSONClipper` 即可运行。macOS 会提示"无法验证开发者"，点击 **系统设置 → 隐私与安全性 → 仍要打开** 确认即可。仅首次需要。
+> 不再支持 macOS。
 
 ## 使用方法
 
-### 1. 启动程序
+### 启动
 
-双击 `StockJSONClipper.exe`（Windows）或 `StockJSONClipper`（macOS），程序会在系统托盘显示图标。macOS 首次启动需在系统设置中允许。
+双击 `StockJSONClipper.exe`，系统托盘出现图标。右键 → **显示面板** 打开操作界面。
 
-### 2. 获取数据
+### 获取数据
 
-**方式一（剪贴板自动识别）：**
-在股票软件中选中6位代码按 `Ctrl+C`，程序自动识别并生成JSON到剪贴板，直接 `Ctrl+V` 粘贴到AI对话框。
+**剪贴板自动识别：** 在股票软件中复制6位代码（`Ctrl+C`），自动生成JSON到剪贴板，直接粘贴给AI。
 
-**方式二（面板手动输入）：**
-右键托盘图标 → 显示面板，在搜索框输入代码点击查询。
+**面板手动输入：** 在搜索框输入代码点击查询。
 
-### 3. 支持的输入格式
+### 输入格式
 
 | 输入 | 含义 |
 |------|------|
-| `000001` | 深市平安银行，日线数据 |
+| `000001` | 日线数据 |
 | `W:000001` | 周线数据 |
 | `M:000001` | 月线数据 |
-| `#000001` | 保存为本地JSON文件（不入剪贴板） |
+| `#000001` | 保存为本地JSON |
 
-### 4. 输出内容
+### 功能
 
-生成的JSON包含：股票基本信息、MA/MACD/RSI/BOLL技术指标、区间统计摘要、原始K线数据。
-
-### 5. 公式辅助
-
-在面板中粘贴通达信选股公式（如 `CROSS(MA(C,5), MA(C,20)) AND RSI(6)>50`），点击生成AI分析提示词，粘贴到AI对话框获取逐条条件判断。
+- **数据查询**: K线 + MA/MACD/RSI/BOLL 技术指标
+- **AI分析**: 粘贴通达信选股公式 → 生成分析提示词
+- **实时盯盘**: 新浪实时行情，红涨绿跌，最多6股同屏
 
 ## 从源码运行
 
@@ -66,28 +44,36 @@ xattr -d com.apple.quarantine ~/Downloads/StockJSONClipper.app
 git clone https://github.com/ABLingss/Stock-JSON-Clipper.git
 cd Stock-JSON-Clipper
 pip install pyperclip pystray pywebview requests Pillow
-python main.py
+python main.py                 # 托盘模式
+python main.py --code 000001   # CLI 模式
 ```
-
-CLI模式：`python main.py --code 000001`
 
 ## 构建
 
 ```bash
 pip install pyinstaller pyperclip pystray pywebview requests Pillow
-bash build.sh
+
+# Windows
+python -m PyInstaller StockJSONClipper.spec
+
+# 安装器 (需 Inno Setup 6)
+iscc installer.iss
 ```
 
-输出在 `dist/` 目录。
+## 项目结构
+
+```
+core/      配置、缓存、剪贴板、日志、模块注册
+api/       腾讯/新浪/东财 K线 + 新浪实时行情
+data/      技术指标计算、JSON 构建
+ui/        系统托盘、WebView 面板
+modules/   AI分析、实时盯盘
+```
 
 ## 数据来源
 
-腾讯财经、新浪财经、东方财富的公开API。纯个人学习研究用途。
-
-## 配置
-
-首次运行自动生成 `config.ini`，可在面板设置中修改：数据条数、保存目录、缓存时间、轮询间隔等。
+腾讯财经、新浪财经、东方财富的公开API。
 
 ## License
 
-MIT
+GPL-3.0 — 本项目集成了 [RollerCoaster](https://github.com/YQBaobao/RollerCoaster) 的实时行情组件。
