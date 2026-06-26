@@ -10,7 +10,7 @@ import math
 import statistics
 from typing import Any, Dict, List, Optional
 
-from indicators import calc_all_indicators
+from data.indicators import calc_all_indicators
 
 
 def build_summary(kline_data: List[Dict[str, Any]]) -> Dict[str, Any]:

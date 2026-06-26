@@ -360,6 +360,97 @@ def generate_prompt(
     return "\n".join(parts)
 
 
+# ============================================================
+# Module wrapper
+# ============================================================
+from core.registry import BaseModule
+
+
+class PromptModule(BaseModule):
+    """AI prompt generation module — wraps formula prompt generators.
+
+    Exposes generate_prompt and quick_analysis_prompt as JS-callable
+    API methods via the module registry.
+    """
+
+    name = "AI分析"
+    description = "通达信公式 → AI分析提示词生成器"
+    version = "2.1"
+
+    def get_api_methods(self) -> dict:
+        return {
+            "generate_prompt": self._api_generate_prompt,
+            "quick_analysis_prompt": self._api_quick_analysis_prompt,
+        }
+
+    def get_panel_tab(self) -> dict:
+        """Return the AI analysis tab definition."""
+        return {
+            "id": "tab-formula",
+            "title": "🤖 AI分析",
+            "html": r"""
+<div class='main-area'>
+  <div class='card'>
+    <div class='card-title' style='font-size:13px;margin-bottom:10px;'>🤖 通达信公式 → AI分析提示词</div>
+    <div style='font-size:12px;color:var(--text2);margin-bottom:8px;'>
+      将通达信选股公式粘贴到下方，系统会自动解析公式要素，结合当前股票的技术指标，
+      生成一份专业的AI分析提示词。将提示词粘贴到 ChatGPT / DeepSeek / Claude 对话框即可获得分析。
+    </div>
+    <textarea id='formulaInput' placeholder='在此粘贴通达信选股公式&#10;例如: CROSS(MA(收盘价,5), MA(收盘价,20)) AND RSI(6) 大于 50&#10;&#10;支持: MA均线 / MACD / RSI / BOLL布林带 / CROSS金叉死叉 / 比较运算'></textarea>
+    <div class='card-actions' style='margin-top:10px;'>
+      <button class='btn-primary' onclick='onGeneratePrompt()'>✨ 生成选股分析提示词</button>
+      <button onclick='onQuickAnalyze()'>📊 快速技术分析（无需公式）</button>
+      <button onclick="document.getElementById('formulaInput').value=''">清空公式</button>
+    </div>
+    <div style='font-size:10px;color:var(--text3);margin-top:6px;'>
+      提示词将自动复制到剪贴板，直接粘贴到AI对话框使用。生成前请先查询股票数据。
+    </div>
+  </div>
+</div>""",
+        }
+
+    # ---- Internal API handlers ----
+
+    def _api_generate_prompt(self, formula_text: str) -> dict:
+        """JS-exposed: generate a formula-based analysis prompt."""
+        import traceback
+        try:
+            import pyperclip
+            detail = self._clipper.get_result_detail()
+            if not detail or not detail.get("meta") or not detail["meta"].get("code"):
+                return {"success": False, "error": "暂无股票数据，请先在搜索框输入代码查询"}
+            prompt = generate_prompt(
+                formula=formula_text,
+                stock_code=detail["meta"]["code"],
+                stock_name=detail["meta"].get("name", "未知"),
+                indicators=detail.get("indicators", {}),
+                summary=detail.get("summary", {}),
+            )
+            pyperclip.copy(prompt)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e), "detail": traceback.format_exc()}
+
+    def _api_quick_analysis_prompt(self) -> dict:
+        """JS-exposed: generate a quick analysis prompt without formula."""
+        import traceback
+        try:
+            import pyperclip
+            detail = self._clipper.get_result_detail()
+            if not detail or not detail.get("meta") or not detail["meta"].get("code"):
+                return {"success": False, "error": "暂无股票数据，请先在搜索框输入代码查询"}
+            prompt = generate_quick_prompt(
+                code=detail["meta"]["code"],
+                name=detail["meta"].get("name", "未知"),
+                indicators=detail.get("indicators", {}),
+                summary=detail.get("summary", {}),
+            )
+            pyperclip.copy(prompt)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e), "detail": traceback.format_exc()}
+
+
 def generate_quick_prompt(
     code: str,
     name: str,
