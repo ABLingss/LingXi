@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import webview
 
 if TYPE_CHECKING:
-    from stock_clipper import StockClipper
+    from core.clipper import StockClipper
 
 
 # ============================================================
@@ -227,6 +227,7 @@ PANEL_HTML = r"""
     border-radius: var(--radius);
     padding: 14px 16px;
     margin-bottom: 10px;
+    contain: layout style;
   }
   .card-header {
     display: -webkit-flex; display: flex;
@@ -439,6 +440,45 @@ PANEL_HTML = r"""
     z-index: 999;
   }
   .toast.show { opacity: 1; }
+  .toast.error { background: #4a1a1a; color: #fca5a5; }
+
+  /* Error Banner */
+  .error-banner {
+    display: none;
+    margin: 6px 14px;
+    padding: 10px 14px;
+    background: var(--red-bg);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: #fca5a5;
+    word-break: break-all;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .error-banner.show { display: block; }
+  .error-banner .err-title {
+    font-weight: 700;
+    color: #ef4444;
+    margin-bottom: 4px;
+  }
+  .error-banner .err-detail {
+    color: var(--text2);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-top: 4px;
+  }
+  .error-banner .err-close {
+    float: right;
+    color: var(--text2);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+  }
 
   .footer {
     text-align: center;
@@ -481,6 +521,13 @@ PANEL_HTML = r"""
 <div class="status-line">
   <div class="status-dot on" id="statusDot"></div>
   <span id="statusText">剪贴板监控运行中 — 在股票软件复制代码即可自动识别</span>
+</div>
+
+<!-- Error Banner -->
+<div class="error-banner" id="errorBanner" onclick="(function(e){if(e.target.classList.contains('err-close'))document.getElementById('errorBanner').classList.remove('show')})(event)">
+  <span class="err-close">&times;</span>
+  <div class="err-title" id="errTitle">⚠ 错误</div>
+  <div class="err-detail" id="errDetail"></div>
 </div>
 
 <!-- Tabs -->
@@ -612,6 +659,37 @@ PANEL_HTML = r"""
 
 <script>
 // ============================================================
+// Global Error Handler — show all JS errors in UI
+// ============================================================
+window._showError = function(title, detail) {
+  var banner = document.getElementById('errorBanner');
+  document.getElementById('errTitle').textContent = '⚠ ' + (title || '错误');
+  document.getElementById('errDetail').textContent = detail || '';
+  banner.classList.add('show');
+  // Also toast
+  var toast = document.getElementById('toast');
+  toast.textContent = title || detail || '未知错误';
+  toast.classList.add('show', 'error');
+  clearTimeout(toast._timeout);
+  toast._timeout = setTimeout(function() { toast.classList.remove('show', 'error'); }, 6000);
+};
+
+window.onerror = function(msg, url, line, col, err) {
+  var detail = msg;
+  if (url) detail += '\n文件: ' + url;
+  if (line) detail += '\n行: ' + line + (col ? ':' + col : '');
+  if (err && err.stack) detail += '\n\n' + err.stack;
+  window._showError('JavaScript 运行时错误', detail);
+  return false;
+};
+
+window.addEventListener('unhandledrejection', function(e) {
+  var detail = (e.reason ? (e.reason.message || String(e.reason)) : 'Promise rejected');
+  if (e.reason && e.reason.stack) detail += '\n\n' + e.reason.stack;
+  window._showError('未捕获的异步错误', detail);
+});
+
+// ============================================================
 // Tab switching
 // ============================================================
 (function() {
@@ -658,13 +736,17 @@ function onSearch() {
       showToast('已加入查询队列: ' + code + '（数据源: 腾讯财经→新浪财经→东方财富 自动切换）');
       fastPollResult(0);
     } else {
-      showToast('查询失败: ' + (res && res.error ? res.error : '未知错误'));
+      var errMsg = (res && res.error ? res.error : '未知错误');
+      var errDetail = (res && res.detail ? res.detail : '');
+      showToast('查询失败: ' + errMsg);
+      window._showError('查询失败 ' + code, errMsg + (errDetail ? '\n\n' + errDetail : ''));
       btn.disabled = false;
       btn.textContent = '查询';
       window._pollFast = false;
     }
   }).catch(function(e) {
     showToast('内部错误，请重试');
+    window._showError('通信错误', '与后端API通信失败。请确认程序完整运行。\n' + (e && e.message ? e.message : String(e)));
     btn.disabled = false;
     btn.textContent = '查询';
     window._pollFast = false;
@@ -785,19 +867,34 @@ function renderResultCard(detail) {
 // ============================================================
 function onCopyJSON() {
   pywebview.api.copy_last_json().then(function(r) {
-    showToast(r && r.success ? '完整JSON已复制到剪贴板，可直接粘贴到AI对话框' : '暂无数据可复制');
+    if (r && r.success) {
+      showToast('完整JSON已复制到剪贴板，可直接粘贴到AI对话框');
+    } else {
+      showToast((r && r.error) || '暂无数据可复制');
+      if (r && r.detail) window._showError('复制失败', r.error + '\n\n' + r.detail);
+    }
   });
 }
 
 function onCopyPrompt() {
   pywebview.api.quick_analysis_prompt().then(function(r) {
-    showToast(r && r.success ? 'AI分析提示词已复制到剪贴板，请粘贴到 ChatGPT/DeepSeek/Claude' : (r && r.error ? r.error : '操作失败'));
+    if (r && r.success) {
+      showToast('AI分析提示词已复制到剪贴板，请粘贴到 ChatGPT/DeepSeek/Claude');
+    } else {
+      showToast((r && r.error) || '操作失败');
+      if (r && r.detail) window._showError('生成提示词失败', r.error + '\n\n' + r.detail);
+    }
   });
 }
 
 function onSaveFile() {
   pywebview.api.save_last_to_file().then(function(r) {
-    showToast(r && r.success ? '已保存文件: ' + r.filename : '保存失败');
+    if (r && r.success) {
+      showToast('已保存文件: ' + r.filename);
+    } else {
+      showToast((r && r.error) || '保存失败');
+      if (r && r.detail) window._showError('保存失败', r.error + '\n\n' + r.detail);
+    }
   });
 }
 
@@ -808,13 +905,23 @@ function onGeneratePrompt() {
   var formula = document.getElementById('formulaInput').value.trim();
   if (!formula) { showToast('请先粘贴通达信选股公式到文本框中'); return; }
   pywebview.api.generate_prompt(formula).then(function(r) {
-    showToast(r && r.success ? '选股分析提示词已生成并复制到剪贴板！请粘贴到AI对话框' : (r && r.error ? r.error : '生成失败，请确认已查询股票数据'));
+    if (r && r.success) {
+      showToast('选股分析提示词已生成并复制到剪贴板！请粘贴到AI对话框');
+    } else {
+      showToast((r && r.error) || '生成失败');
+      if (r && r.detail) window._showError('生成提示词失败', r.error + '\n\n' + r.detail);
+    }
   });
 }
 
 function onQuickAnalyze() {
   pywebview.api.quick_analysis_prompt().then(function(r) {
-    showToast(r && r.success ? '技术分析提示词已复制到剪贴板！请粘贴到AI对话框' : (r && r.error ? r.error : '暂无股票数据，请先查询股票代码'));
+    if (r && r.success) {
+      showToast('技术分析提示词已复制到剪贴板！请粘贴到AI对话框');
+    } else {
+      showToast((r && r.error) || '暂无股票数据，请先查询股票代码');
+      if (r && r.detail) window._showError('快速分析失败', r.error + '\n\n' + r.detail);
+    }
   });
 }
 
@@ -919,16 +1026,81 @@ function showToast(msg) {
 // ============================================================
 // Init
 // ============================================================
-setInterval(function() { refreshHistory(); refreshStatus(); }, 3000);
+// ============================================================
+// Adaptive polling — adjusts interval based on state
+// ============================================================
+(function() {
+  var FAST = 400, NORMAL = 3000, SLOW = 10000;
+  var _interval = NORMAL;
+  var _timer = null;
+  var _lastHistory = '';
+
+  function poll() {
+    // Batch: refresh both in one rAF
+    var doRefresh = function() {
+      refreshStatus();
+      // Skip history if data unchanged
+      pywebview.api.get_history().then(function(data) {
+        var key = JSON.stringify(data);
+        if (key !== _lastHistory) {
+          _lastHistory = key;
+          var tbody = document.getElementById('historyBody');
+          if (!data || data.length === 0) {
+            tbody.innerHTML = '<tr class="empty"><td colspan="4">暂无记录</td></tr>';
+            return;
+          }
+          var rows = '';
+          for (var i = 0; i < data.length; i++) {
+            var r = data[i];
+            var icons = {success: 'ok', error: 'err', cached: 'cache', pending: 'pend'};
+            var labels = {success: '成功', error: '失败', cached: '缓存', pending: '排队中'};
+            var cls = 'status-' + (icons[r.status] || 'pend');
+            rows += '<tr><td>' + r.time + '</td><td>' + r.code + '</td><td>' + (r.name || '-') + '</td><td class="' + cls + '">' + (labels[r.status] || r.status) + ' ' + (r.message || '') + '</td></tr>';
+          }
+          tbody.innerHTML = rows;
+        }
+      });
+      if (!window._pollFast) {
+        pywebview.api.get_last_result_detail().then(function(detail) {
+          if (detail && detail.meta && detail.meta.code) {
+            window._currentResult = detail;
+            renderResultCard(detail);
+          }
+        });
+      }
+    };
+
+    window.requestAnimationFrame(doRefresh);
+
+    // Adaptive: fast when polling result, slow when hidden
+    var next = window._pollFast ? FAST :
+               (document.hidden ? SLOW : NORMAL);
+    if (next !== _interval) { _interval = next; }
+    _timer = setTimeout(poll, _interval);
+  }
+
+  // Visibility change → adjust interval immediately
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+      _interval = window._pollFast ? FAST : NORMAL;
+      clearTimeout(_timer);
+      _timer = setTimeout(poll, 100);
+    }
+  });
+
+  // Start
+  _timer = setTimeout(poll, 500);
+})();
 
 (function init() {
-  loadConfig();
+  // Defer non-critical init
+  setTimeout(function() { loadConfig(); }, 50);
   refreshHistory();
   refreshStatus();
   pywebview.api.get_last_result_detail().then(function(detail) {
     if (detail && detail.meta && detail.meta.code) { window._currentResult = detail; renderResultCard(detail); }
   });
-  setTimeout(function() { document.getElementById('searchInput').focus(); }, 400);
+  setTimeout(function() { document.getElementById('searchInput').focus(); }, 200);
 })();
 </script>
 </body>
@@ -979,7 +1151,7 @@ class PanelAPI:
     def search_stock(self, code: str, period: str = "daily", save_mode: bool = False) -> Dict[str, Any]:
         import os, time as _time
         try:
-            from clipboard_monitor import parse_clipboard
+            from core.clipboard import parse_clipboard
             code = code.strip()
             request = parse_clipboard(code)
             if request:
@@ -996,7 +1168,7 @@ class PanelAPI:
             result = self._clipper.fetch_manual(actual_code, actual_period)
 
             if actual_save:
-                from clipboard_monitor import StockRequest
+                from core.clipboard import StockRequest
                 try:
                     self._clipper._fetch_queue.put_nowait(
                         StockRequest(code=actual_code, period=actual_period, save_mode=True, raw=code)
@@ -1009,58 +1181,70 @@ class PanelAPI:
             return {"success": True}
         except Exception as e:
             import traceback
+            tb = traceback.format_exc()
             try:
-                with open(os.path.join(os.getcwd(), "error.log"), "w", encoding="utf-8") as f:
+                with open(os.path.join(os.getcwd(), "error.log"), "a", encoding="utf-8") as f:
                     f.write(f"[{_time.strftime('%Y-%m-%d %H:%M:%S')}] PanelAPI.search_stock\n")
-                    f.write(traceback.format_exc())
+                    f.write(tb)
             except Exception:
                 pass
-            return {"success": False, "error": f"{type(e).__name__}: {e}"}
+            return {
+                "success": False,
+                "error": f"{type(e).__name__}: {e}",
+                "detail": tb,
+            }
 
     def copy_last_json(self) -> Dict[str, Any]:
-        import pyperclip
-        last = self._clipper.get_last_result()
-        if last is None:
-            return {"success": False, "error": "暂无数据"}
-        cache_key = last.cache_key or self._clipper._cache.make_key(
-            last.code, last.period, self._clipper._config.get("default_count", 250))
-        cached_json = self._clipper._cache.get(cache_key)
-        if cached_json:
-            pyperclip.copy(cached_json)
-            return {"success": True}
-        return {"success": False, "error": "缓存已过期，请重新查询"}
+        import pyperclip, traceback
+        try:
+            last = self._clipper.get_last_result()
+            if last is None:
+                return {"success": False, "error": "暂无数据"}
+            cache_key = last.cache_key or self._clipper._cache.make_key(
+                last.code, last.period, self._clipper._config.get("default_count", 250))
+            cached_json = self._clipper._cache.get(cache_key)
+            if cached_json:
+                pyperclip.copy(cached_json)
+                return {"success": True}
+            return {"success": False, "error": "缓存已过期，请重新查询"}
+        except Exception as e:
+            return {"success": False, "error": str(e), "detail": traceback.format_exc()}
 
     def save_last_to_file(self) -> Dict[str, Any]:
-        last = self._clipper.get_last_result()
-        if last is None:
-            return {"success": False, "error": "暂无数据"}
-        cache_key = last.cache_key or self._clipper._cache.make_key(
-            last.code, last.period, self._clipper._config.get("default_count", 250))
-        cached_json = self._clipper._cache.get(cache_key)
-        if not cached_json:
-            return {"success": False, "error": "缓存已过期，请重新查询"}
-        data = json.loads(cached_json)
-        name = data["meta"].get("name", "未知")
-        safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "")
-        date_str = time.strftime("%Y%m%d")
-        filename = f"{last.code}_{safe_name}_{date_str}.json"
-        save_dir = self._clipper._config.get("save_directory", "")
-        if save_dir and os.path.isdir(save_dir):
-            filepath = os.path.join(save_dir, filename)
-        else:
-            filepath = os.path.join(os.getcwd(), filename)
-        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(cached_json)
-        return {"success": True, "filename": filename}
+        import traceback
+        try:
+            last = self._clipper.get_last_result()
+            if last is None:
+                return {"success": False, "error": "暂无数据"}
+            cache_key = last.cache_key or self._clipper._cache.make_key(
+                last.code, last.period, self._clipper._config.get("default_count", 250))
+            cached_json = self._clipper._cache.get(cache_key)
+            if not cached_json:
+                return {"success": False, "error": "缓存已过期，请重新查询"}
+            data = json.loads(cached_json)
+            name = data["meta"].get("name", "未知")
+            safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "")
+            date_str = time.strftime("%Y%m%d")
+            filename = f"{last.code}_{safe_name}_{date_str}.json"
+            save_dir = self._clipper._config.get("save_directory", "")
+            if save_dir and os.path.isdir(save_dir):
+                filepath = os.path.join(save_dir, filename)
+            else:
+                filepath = os.path.join(os.getcwd(), filename)
+            os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(cached_json)
+            return {"success": True, "filename": filename}
+        except Exception as e:
+            return {"success": False, "error": str(e), "detail": traceback.format_exc()}
 
     def quick_analysis_prompt(self) -> Dict[str, Any]:
-        import pyperclip
+        import pyperclip, traceback
         detail = self._clipper.get_result_detail()
         if not detail or not detail.get("meta") or not detail["meta"].get("code"):
             return {"success": False, "error": "暂无股票数据，请先在搜索框输入代码查询"}
         try:
-            from formula_prompt import generate_quick_prompt
+            from modules.prompt.formula import generate_quick_prompt
             prompt = generate_quick_prompt(
                 code=detail["meta"]["code"],
                 name=detail["meta"].get("name", "未知"),
@@ -1070,11 +1254,13 @@ class PanelAPI:
             pyperclip.copy(prompt)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            tb = traceback.format_exc()
+            return {"success": False, "error": str(e), "detail": tb}
 
     def generate_prompt(self, formula_text: str) -> Dict[str, Any]:
+        import traceback
         try:
-            from formula_prompt import generate_prompt
+            from modules.prompt.formula import generate_prompt
             import pyperclip
             detail = self._clipper.get_result_detail()
             if not detail or not detail.get("meta") or not detail["meta"].get("code"):
@@ -1089,7 +1275,8 @@ class PanelAPI:
             pyperclip.copy(prompt)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            tb = traceback.format_exc()
+            return {"success": False, "error": str(e), "detail": tb}
 
 
 # ============================================================

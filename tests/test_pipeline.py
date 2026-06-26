@@ -21,15 +21,19 @@ import os
 import time
 import threading
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from clipboard_monitor import parse_clipboard, StockRequest
-from cache_manager import CacheManager
-from api_client import determine_market, make_secid, StockError
-from indicators import (
+from core.clipboard import parse_clipboard, StockRequest
+from core.cache import CacheManager
+from api.client import StockError, _em_secid as make_secid
+from data.indicators import (
     calc_ma, calc_ema, calc_macd, calc_rsi, calc_boll, calc_all_indicators,
 )
-from data_builder import build_json, build_summary, to_json_string
+from data.builder import build_json, build_summary, to_json_string, _determine_market_label
+
+# Compatibility wrapper: tests expect determine_market to return dict
+def determine_market(code: str) -> dict:
+    return {"market": _determine_market_label(code)}
 
 
 PASS = 0

@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw
 import pystray
 
 if TYPE_CHECKING:
-    from stock_clipper import StockClipper
+    from core.clipper import StockClipper
 
 
 # --- Icon generation ---
@@ -90,7 +90,7 @@ def _create_menu(clipper: "StockClipper", icon: pystray.Icon) -> pystray.Menu:
     def on_show_panel():
         """Show the PyWebView info panel."""
         try:
-            from web_panel import show_panel
+            from ui.panel import show_panel
             show_panel(clipper)
         except Exception as e:
             icon.notify(f"无法打开面板: {e}", title="Stock JSON Clipper")
@@ -111,7 +111,7 @@ def _create_menu(clipper: "StockClipper", icon: pystray.Icon) -> pystray.Menu:
     )
 
 
-def run_tray(clipper: "StockClipper") -> None:
+def run_tray(clipper: "StockClipper", auto_show_panel: bool = True) -> None:
     """Initialize and run the system tray icon (blocking).
 
     This should be called from the main thread as pystray.run()
@@ -119,6 +119,7 @@ def run_tray(clipper: "StockClipper") -> None:
 
     Args:
         clipper: StockClipper instance with start() already called.
+        auto_show_panel: If True, auto-open the info panel on startup.
     """
     icon_image = _create_tray_icon()
 
@@ -140,6 +141,18 @@ def run_tray(clipper: "StockClipper") -> None:
             pass
 
     clipper.set_notification_callback(notify_cb)
+
+    # Auto-show panel on startup (after tray is ready)
+    if auto_show_panel:
+        def _show_panel_later():
+            import time as _time
+            _time.sleep(0.6)
+            try:
+                from ui.panel import show_panel
+                show_panel(clipper)
+            except Exception:
+                pass
+        threading.Thread(target=_show_panel_later, daemon=True).start()
 
     # Run the tray (blocking)
     icon.run()

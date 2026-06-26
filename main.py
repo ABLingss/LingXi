@@ -31,15 +31,15 @@ if sys.stdout is not None and sys.stdout.encoding:
 # Ensure the project root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import load_config, save_config
-from stock_clipper import StockClipper
+from core.config import load_config, save_config
+from core.clipper import StockClipper
 
 
 def run_cli(args) -> None:
     """CLI mode: fetch a single stock code and output JSON to stdout or file."""
-    from api_client import fetch_kline, fetch_stock_info, StockError
-    from data_builder import build_json, to_json_string
-    from clipboard_monitor import parse_clipboard
+    from api.client import fetch_kline, fetch_stock_info, StockError
+    from data.builder import build_json, to_json_string
+    from core.clipboard import parse_clipboard
 
     # Parse code with optional prefixes
     raw_code = args.code.strip()
@@ -117,7 +117,7 @@ def run_cli(args) -> None:
 
 def run_tray(args) -> None:
     """Tray mode: launch the full system tray application."""
-    from tray_app import run_tray
+    from ui.tray import run_tray
 
     print("📈 Stock JSON Clipper V2.0")
     print("   Starting system tray mode...")
@@ -127,6 +127,10 @@ def run_tray(args) -> None:
 
     config_path = args.config if hasattr(args, 'config') and args.config else None
     clipper = StockClipper(config_path=config_path)
+
+    # Register built-in feature modules
+    from modules.prompt.formula import PromptModule
+    clipper.registry.register(PromptModule(), clipper)
 
     # Graceful shutdown on Ctrl+C
     def _shutdown(signum, frame):
@@ -141,8 +145,9 @@ def run_tray(args) -> None:
     clipper.start()
 
     # Run tray (blocking)
+    auto_show = not args.no_panel
     try:
-        clipper.run_tray()
+        clipper.run_tray(auto_show_panel=auto_show)
     except KeyboardInterrupt:
         pass
     finally:
@@ -189,6 +194,11 @@ def main() -> None:
         "--debug",
         action="store_true",
         help="Enable debug/console logging.",
+    )
+    parser.add_argument(
+        "--no-panel",
+        action="store_true",
+        help="Do not auto-show the info panel on startup.",
     )
 
     args = parser.parse_args()

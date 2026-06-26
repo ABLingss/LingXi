@@ -20,12 +20,13 @@ import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from api_client import fetch_kline, fetch_stock_info, StockError
-from cache_manager import CacheManager
-from clipboard_monitor import ClipboardMonitor, StockRequest
-from config import load_config, save_config, update_config
-from data_builder import build_json, to_json_string
-from indicators import calc_all_indicators
+from api.client import fetch_kline, fetch_stock_info, StockError
+from core.cache import CacheManager
+from core.clipboard import ClipboardMonitor, StockRequest
+from core.config import load_config, save_config, update_config
+from core.registry import ModuleRegistry
+from data.builder import build_json, to_json_string
+from data.indicators import calc_all_indicators
 
 
 # --- Fetch result for panel logging ---
@@ -86,6 +87,9 @@ class StockClipper:
         self._config_path = config_path
         self._config = load_config(config_path) if config_path else load_config()
 
+        # Module registry (for pluggable feature modules)
+        self.registry = ModuleRegistry()
+
         # Cache
         self._cache = CacheManager(ttl=self._config.get("cache_ttl", 300.0))
 
@@ -119,6 +123,9 @@ class StockClipper:
 
         self._running.set()
 
+        # Start module lifecycle
+        self.registry.start_all()
+
         # Start clipboard monitor
         self._clipboard_monitor = ClipboardMonitor(
             on_detected=self._on_stock_detected,
@@ -138,6 +145,9 @@ class StockClipper:
         """Gracefully stop all background threads."""
         self._running.clear()
 
+        # Stop module lifecycle
+        self.registry.stop_all()
+
         if self._clipboard_monitor:
             self._clipboard_monitor.stop()
 
@@ -150,10 +160,10 @@ class StockClipper:
         if self._fetch_worker_thread:
             self._fetch_worker_thread.join(timeout=3.0)
 
-    def run_tray(self) -> None:
+    def run_tray(self, auto_show_panel: bool = True) -> None:
         """Run the system tray (blocking). Imported here to avoid circular deps."""
-        from tray_app import run_tray
-        run_tray(self)
+        from ui.tray import run_tray
+        run_tray(self, auto_show_panel=auto_show_panel)
 
     # --- Callback registration ---
 
