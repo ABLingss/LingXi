@@ -1005,7 +1005,6 @@ function refreshStatus() {
 function loadConfig() {
   pywebview.api.get_config().then(function(cfg) {
     if (!cfg) return;
-    if (cfg.output_format) document.getElementById('outputFormat').value = cfg.output_format;
     if (cfg.default_count) document.getElementById('defaultCount').value = cfg.default_count;
     if (cfg.poll_interval !== undefined) document.getElementById('pollInterval').value = cfg.poll_interval;
     if (cfg.cache_ttl !== undefined) document.getElementById('cacheTTL').value = cfg.cache_ttl;
