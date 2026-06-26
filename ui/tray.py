@@ -111,15 +111,16 @@ def _create_menu(clipper: "StockClipper", icon: pystray.Icon) -> pystray.Menu:
     )
 
 
-def run_tray(clipper: "StockClipper", auto_show_panel: bool = True) -> None:
+def run_tray(clipper: "StockClipper", auto_show_panel: bool = False) -> None:
     """Initialize and run the system tray icon (blocking).
 
-    This should be called from the main thread as pystray.run()
-    runs its own event loop.
+    Must be called from the main thread. Panel opens via tray menu.
+    pywebview and pystray both need the main thread, so auto-show
+    from a background thread is not possible.
 
     Args:
         clipper: StockClipper instance with start() already called.
-        auto_show_panel: If True, auto-open the info panel on startup.
+        auto_show_panel: Ignored (kept for compat). Panel opens from menu.
     """
     icon_image = _create_tray_icon()
 
@@ -142,24 +143,6 @@ def run_tray(clipper: "StockClipper", auto_show_panel: bool = True) -> None:
 
     clipper.set_notification_callback(notify_cb)
 
-    # Auto-show panel on startup
-    if auto_show_panel:
-        def _show_panel_later():
-            import time as _time, traceback, sys
-            _time.sleep(0.3)
-            try:
-                from ui.panel import show_panel
-                show_panel(clipper)
-            except Exception as e:
-                # Log the real error so user can see what went wrong
-                err = f"{type(e).__name__}: {e}"
-                try:
-                    from core.logging_setup import get_logger
-                    get_logger("tray").error("Panel startup failed: %s", err)
-                except Exception:
-                    pass
-                icon.notify(f"面板启动失败: {err}", title="Stock JSON Clipper")
-        threading.Thread(target=_show_panel_later, daemon=True).start()
-
-    # Run the tray (blocking)
+    # Run the tray (blocking on main thread)
+    # Panel opens via right-click menu "显示面板" — runs on main thread naturally
     icon.run()
