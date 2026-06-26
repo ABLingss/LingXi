@@ -1134,11 +1134,20 @@ function _api(method) {
 // ============================================================
 var _mwTimer = null;
 function mwRefresh() {
+  var c = document.getElementById('mwQuotes');
+  if (!c) return;
   pywebview.api.mw_get_quotes().then(function(data) {
-    var c = document.getElementById('mwQuotes');
-    if (!c) return;
     if (!data || !Object.keys(data).length) {
-      c.innerHTML = '<div class="mw-empty">暂无自选股<br><span style="font-size:10px;color:var(--text3)">下方添加代码开始盯盘</span></div>';
+      // Check if we have watchlist items — if so, likely non-trading hours
+      pywebview.api.mw_get_codes().then(function(codes) {
+        if (codes && codes.length) {
+          c.innerHTML = '<div class="mw-empty">⏸ 非交易时段<br><span style="font-size:10px;color:var(--text3)">已添加 ' + codes.length + ' 只股票，等待开盘</span></div>';
+        } else {
+          c.innerHTML = '<div class="mw-empty">暂无自选股<br><span style="font-size:10px;color:var(--text3)">下方添加代码开始盯盘</span></div>';
+        }
+      }).catch(function() {
+        c.innerHTML = '<div class="mw-empty">暂无自选股<br><span style="font-size:10px;color:var(--text3)">下方添加代码开始盯盘</span></div>';
+      });
       return;
     }
     var codes = Object.keys(data).sort();
@@ -1154,6 +1163,8 @@ function mwRefresh() {
       h += '</div>';
     }
     c.innerHTML = h;
+  }).catch(function() {
+    c.innerHTML = '<div class="mw-empty">⏸ 非交易时段<br><span style="font-size:10px;color:var(--text3)">数据源暂无响应</span></div>';
   });
 }
 function mwAddCode() {
