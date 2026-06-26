@@ -449,6 +449,28 @@ PANEL_HTML = r"""
     font-size: 10px; padding: 10px 8px; opacity: 0.4;
     letter-spacing: 0.2px;
   }
+  /* Market Watch (baked inline) */
+  .mw-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm); margin-bottom: 4px; background: var(--surface); border: 1px solid var(--border); }
+  .mw-row.mw-up { border-left: 3px solid #ff6b6b; }
+  .mw-row.mw-down { border-left: 3px solid #4ddf7c; }
+  .mw-row.mw-flat { border-left: 3px solid var(--text3); }
+  .mw-info { flex: 1; min-width: 0; }
+  .mw-code { font-weight: 700; color: var(--text1); font-size: 12px; font-family: var(--font-mono); }
+  .mw-name { color: var(--text2); font-size: 10px; margin-left: 6px; }
+  .mw-price { font-weight: 700; font-size: 14px; font-family: var(--font-mono); text-align: right; min-width: 60px; }
+  .mw-up .mw-price { color: #ff6b6b; }
+  .mw-down .mw-price { color: #4ddf7c; }
+  .mw-change { font-size: 12px; font-family: var(--font-mono); text-align: right; min-width: 70px; font-weight: 600; }
+  .mw-up .mw-change { color: #ff6b6b; }
+  .mw-down .mw-change { color: #4ddf7c; }
+  .mw-remove { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 16px; padding: 0 2px; }
+  .mw-remove:hover { color: var(--red); }
+  .mw-empty { text-align: center; padding: 20px 10px; color: var(--text3); font-size: 12px; }
+  .mw-add-row { display: flex; gap: 6px; margin-top: 8px; }
+  .mw-add-row input { flex: 1; background: var(--surface); color: var(--text1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; font-size: 12px; font-family: var(--font-mono); outline: none; }
+  .mw-add-row input:focus { border-color: var(--blue); }
+  .mw-add-row button { background: var(--blue); color: #fff; border: none; border-radius: var(--radius-sm); padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .mw-hint { font-size: 9px; color: var(--text3); margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -497,6 +519,7 @@ PANEL_HTML = r"""
   <button class="tab-btn active" data-tab="data">📊 数据查询</button>
   <button class="tab-btn" data-tab="settings">⚙️ 设置</button>
   <button class="tab-btn" data-tab="formula">🤖 AI分析</button>
+  <button class="tab-btn" data-tab="watch">👁 盯盘</button>
 </div>
 
 <!-- ====== Tab: 数据查询 ====== -->
@@ -594,7 +617,48 @@ PANEL_HTML = r"""
   </div>
 </div>
 
-<!-- MODULE_TABS -->
+<!-- ====== Tab: AI分析 ====== -->
+<div class="tab-content" id="tab-formula">
+  <div class="main-area">
+    <div class="card">
+      <div class="card-title" style="font-size:13px;margin-bottom:10px;">🤖 通达信公式 → AI分析提示词</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">
+        将通达信选股公式粘贴到下方，系统会自动解析公式要素，结合当前股票的技术指标，
+        生成一份专业的AI分析提示词。将提示词粘贴到 ChatGPT / DeepSeek / Claude 对话框即可获得分析。
+      </div>
+      <textarea id="formulaInput" placeholder="在此粘贴通达信选股公式&#10;例如: CROSS(MA(收盘价,5), MA(收盘价,20)) AND RSI(6) 大于 50&#10;&#10;支持: MA均线 / MACD / RSI / BOLL布林带 / CROSS金叉死叉 / 比较运算"></textarea>
+      <div class="card-actions" style="margin-top:10px;">
+        <button class="btn-primary" onclick="onGeneratePrompt()">✨ 生成选股分析提示词</button>
+        <button onclick="onQuickAnalyze()">📊 快速技术分析（无需公式）</button>
+        <button onclick="document.getElementById('formulaInput').value=''">清空公式</button>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">
+        提示词将自动复制到剪贴板，直接粘贴到AI对话框使用。生成前请先查询股票数据。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== Tab: 盯盘 ====== -->
+<div class="tab-content" id="tab-watch">
+  <div class="main-area">
+    <div class="card" style="margin-bottom:8px;">
+      <div style="font-size:12px;font-weight:700;color:var(--text1);margin-bottom:6px;">📡 实时行情</div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px;">
+        数据源: 新浪财经 · 每3秒刷新 · 仅交易时段有效
+      </div>
+      <div id="mwQuotes">
+        <div class="mw-empty">加载中...</div>
+      </div>
+      <div class="mw-add-row">
+        <input type="text" id="mwAddInput" placeholder="输入6位代码, 如 000001" maxlength="6"
+               onkeydown="if(event.key==='Enter')mwAddCode()">
+        <button onclick="mwAddCode()">+ 添加</button>
+      </div>
+      <div class="mw-hint">支持最多6只股票 · 点击 × 移除</div>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 <div class="footer">Stock JSON Clipper V2.1 · GPL-3.0 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
@@ -1035,15 +1099,63 @@ function showToast(msg) {
 })();
 
 (function init() {
+  // Diagnostic: verify bridge
+  pywebview.api.ping().then(function(r) {
+    console.log('[bridge] ping:', r);
+  }).catch(function(e) {
+    document.getElementById('statusText').textContent = 'BRIDGE ERROR: ' + (e && e.message ? e.message : String(e));
+    document.getElementById('statusDot').className = 'status-dot off';
+  });
   // Defer non-critical init
-  setTimeout(function() { loadConfig(); }, 50);
+  setTimeout(function() { loadConfig(); }, 100);
   refreshHistory();
   refreshStatus();
   pywebview.api.get_last_result_detail().then(function(detail) {
     if (detail && detail.meta && detail.meta.code) { window._currentResult = detail; renderResultCard(detail); }
   });
-  setTimeout(function() { document.getElementById('searchInput').focus(); }, 200);
+  setTimeout(function() { document.getElementById('searchInput').focus(); }, 300);
 })();
+
+// ============================================================
+// Market Watch — baked inline (was module JS)
+// ============================================================
+var _mwTimer = null;
+function mwRefresh() {
+  pywebview.api.mw_get_quotes().then(function(data) {
+    var c = document.getElementById('mwQuotes');
+    if (!c) return;
+    if (!data || !Object.keys(data).length) {
+      c.innerHTML = '<div class="mw-empty">暂无自选股<br><span style="font-size:10px;color:var(--text3)">下方添加代码开始盯盘</span></div>';
+      return;
+    }
+    var codes = Object.keys(data).sort();
+    var h = '';
+    for (var i = 0; i < codes.length; i++) {
+      var q = data[codes[i]], up = q.percent > 0, dn = q.percent < 0;
+      var cls = up ? 'mw-up' : (dn ? 'mw-down' : 'mw-flat');
+      h += '<div class="mw-row ' + cls + '">';
+      h += '<div class="mw-info"><span class="mw-code">' + codes[i] + '</span><span class="mw-name">' + (q.name || '--') + '</span></div>';
+      h += '<div class="mw-price">' + (q.current ? q.current.toFixed(2) : '--') + '</div>';
+      h += '<div class="mw-change">' + (up ? '▲' : (dn ? '▼' : '—')) + ' ' + (q.percent ? q.percent.toFixed(2) : '0.00') + '%</div>';
+      h += '<button class="mw-remove" onclick="event.stopPropagation();pywebview.api.mw_remove_code(\'' + codes[i] + '\').then(function(){mwRefresh();})">&times;</button>';
+      h += '</div>';
+    }
+    c.innerHTML = h;
+  });
+}
+function mwAddCode() {
+  var v = document.getElementById('mwAddInput').value.trim().replace(/[#WM:]/g, '');
+  if (!/^\d{6}$/.test(v)) return;
+  pywebview.api.mw_add_code(v).then(function(r) {
+    if (r && r.success) { document.getElementById('mwAddInput').value = ''; mwRefresh(); }
+  });
+}
+// Poll watch when tab is visible
+setInterval(function() {
+  var tab = document.getElementById('tab-watch');
+  if (tab && tab.classList.contains('active')) mwRefresh();
+}, 2500);
+setTimeout(mwRefresh, 800);
 </script>
 </body>
 </html>
@@ -1066,6 +1178,10 @@ class PanelAPI:
         # Dynamically attach module API methods from registry
         for name, func in clipper.registry.get_all_api_methods().items():
             setattr(self, name, func)
+
+    def ping(self) -> str:
+        """Diagnostic: verify JS↔Python bridge works."""
+        return "pong"
 
     def get_history(self) -> List[Dict[str, Any]]:
         return self._clipper.get_history()
@@ -1203,24 +1319,9 @@ def show_panel(clipper: "StockClipper") -> None:
 
         api = PanelAPI(clipper)
 
-        # Assemble HTML: base template + module tab bodies + module CSS + module JS
-        registry = clipper.registry
-        module_tabs_html = "\n".join(
-            t.get("html", "") for t in registry.get_all_panel_tabs()
-        )
-        module_css = registry.get_all_panel_css()
-        module_js = registry.get_all_panel_js()
-
-        html = PANEL_HTML
-        html = html.replace("<!-- MODULE_TABS -->", module_tabs_html)
-        if module_css:
-            html = html.replace("</style>", f"\n/* --- module CSS --- */\n{module_css}\n</style>")
-        if module_js:
-            html = html.replace("</script>", f"\n// --- module JS ---\n{module_js}\n</script>")
-
         _panel_window = webview.create_window(
             title="Stock JSON Clipper V2.1",
-            html=html,
+            html=PANEL_HTML,
             width=560,
             height=760,
             resizable=True,
