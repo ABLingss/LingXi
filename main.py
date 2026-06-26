@@ -31,8 +31,11 @@ if sys.stdout is not None and sys.stdout.encoding:
 # Ensure the project root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from core.logging_setup import init_logging, get_logger
 from core.config import load_config, save_config
 from core.clipper import StockClipper
+
+log = get_logger("main")
 
 
 def run_cli(args) -> None:
@@ -155,8 +158,12 @@ def run_tray(args) -> None:
 
 
 def main() -> None:
+    # Initialize logging early
+    init_logging()
+    log.info("Stock JSON Clipper V2.1 starting")
+
     parser = argparse.ArgumentParser(
-        description="Stock JSON Clipper V2.0 — A-share stock data to AI-ready JSON",
+        description="Stock JSON Clipper V2.1 — A-share stock data to AI-ready JSON",
     )
     parser.add_argument(
         "--code", "-c",

@@ -1,5 +1,5 @@
 """
-stock_clipper.py — Core orchestrator for Stock JSON Clipper V2.0.
+core.clipper — Core orchestrator for Stock JSON Clipper V2.1.
 
 Ties together clipboard monitoring, API fetching, indicator calculation,
 JSON assembly, cache management, file saving, and UI notifications.
@@ -14,19 +14,22 @@ Communication between threads via queue.Queue.
 
 import json
 import os
-import queue
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from api.client import fetch_kline, fetch_stock_info, StockError
 from core.cache import CacheManager
 from core.clipboard import ClipboardMonitor, StockRequest
 from core.config import load_config, save_config, update_config
+from core.logging_setup import get_logger
 from core.registry import ModuleRegistry
 from data.builder import build_json, to_json_string
 from data.indicators import calc_all_indicators
+
+log = get_logger("clipper")
 
 
 # --- Fetch result for panel logging ---
@@ -77,6 +80,7 @@ class StockClipper:
     """
 
     MAX_HISTORY = 5
+    DEDUP_SECONDS = 3.0  # minimum interval between identical code+period requests
 
     def __init__(self, config_path: Optional[str] = None) -> None:
         """Initialize the clipper.
@@ -93,9 +97,12 @@ class StockClipper:
         # Cache
         self._cache = CacheManager(ttl=self._config.get("cache_ttl", 300.0))
 
-        # Queues
-        self._fetch_queue: queue.Queue = queue.Queue(maxsize=100)
-        self._result_queue: queue.Queue = queue.Queue(maxsize=100)
+        # Rate limiting: track last fetch time per (code, period)
+        self._last_fetch_time: Dict[str, float] = {}
+        self._dedup_lock = threading.Lock()
+
+        # Fetch pool: parallel processing with max 2 workers
+        self._fetch_pool: Optional[ThreadPoolExecutor] = None
 
         # History
         self._history: deque = deque(maxlen=self.MAX_HISTORY)
@@ -103,7 +110,6 @@ class StockClipper:
 
         # Threads
         self._clipboard_monitor: Optional[ClipboardMonitor] = None
-        self._fetch_worker_thread: Optional[threading.Thread] = None
 
         # Callbacks for UI
         self._on_notification: Optional[Callable[[str, str], None]] = None
@@ -117,7 +123,7 @@ class StockClipper:
     # --- Public API ---
 
     def start(self) -> None:
-        """Start the background threads (clipboard monitor + fetch worker)."""
+        """Start the background threads (clipboard monitor + fetch pool)."""
         if self._running.is_set():
             return
 
@@ -126,20 +132,15 @@ class StockClipper:
         # Start module lifecycle
         self.registry.start_all()
 
+        # Start fetch pool (max 2 parallel fetches)
+        self._fetch_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fetch")
+
         # Start clipboard monitor
         self._clipboard_monitor = ClipboardMonitor(
             on_detected=self._on_stock_detected,
             poll_interval=self._config.get("poll_interval", 0.5),
         )
         self._clipboard_monitor.start()
-
-        # Start fetch worker
-        self._fetch_worker_thread = threading.Thread(
-            target=self._fetch_worker_loop,
-            daemon=True,
-            name="fetch-worker",
-        )
-        self._fetch_worker_thread.start()
 
     def stop(self) -> None:
         """Gracefully stop all background threads."""
@@ -151,14 +152,10 @@ class StockClipper:
         if self._clipboard_monitor:
             self._clipboard_monitor.stop()
 
-        # Send sentinel to unblock worker
-        try:
-            self._fetch_queue.put_nowait(None)
-        except queue.Full:
-            pass
-
-        if self._fetch_worker_thread:
-            self._fetch_worker_thread.join(timeout=3.0)
+        # Shutdown fetch pool gracefully
+        if self._fetch_pool:
+            self._fetch_pool.shutdown(wait=False, cancel_futures=True)
+            self._fetch_pool = None
 
     def run_tray(self, auto_show_panel: bool = True) -> None:
         """Run the system tray (blocking). Imported here to avoid circular deps."""
@@ -183,52 +180,42 @@ class StockClipper:
         Args:
             request: Parsed StockRequest from clipboard.
         """
-        # Push to fetch queue (non-blocking)
+        # Rate limiting: skip if same code+period was requested recently
+        dedup_key = f"{request.code}_{request.period}"
+        now = time.time()
+        with self._dedup_lock:
+            last = self._last_fetch_time.get(dedup_key, 0)
+            if now - last < self.DEDUP_SECONDS:
+                return  # too soon, skip
+            self._last_fetch_time[dedup_key] = now
+
+        # Submit to fetch pool (non-blocking)
+        if self._fetch_pool:
+            self._fetch_pool.submit(self._fetch_with_status, request)
+
+    def _fetch_with_status(self, request: StockRequest) -> None:
+        """Wrapper that manages status flags around _process_request."""
+        self._fetching.set()
+        self._signal_status("fetching")
+
         try:
-            self._fetch_queue.put_nowait(request)
-        except queue.Full:
-            pass  # Silently drop if queue is full
+            self._process_request(request)
+        except Exception as e:
+            import traceback
+            tb_lines = traceback.format_exc()
+            log.error("Fetch failed for %s: %s", request.code, e)
+            err_detail = f"{type(e).__name__}: {e}"
+            result = FetchResult(
+                code=request.code,
+                status="error",
+                period=request.period,
+                message=f"内部错误: {err_detail}",
+            )
+            self._add_history(result)
+            self._notify("处理失败", f"{request.code}: {err_detail}")
 
-    def _fetch_worker_loop(self) -> None:
-        """Main worker loop running in a background thread."""
-        while self._running.is_set():
-            try:
-                request = self._fetch_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-
-            # Sentinel value to stop
-            if request is None:
-                break
-
-            self._fetching.set()
-            self._signal_status("fetching")
-
-            try:
-                self._process_request(request)
-            except Exception as e:
-                import traceback, io
-                tb_lines = traceback.format_exc()
-                # Log to file for diagnostics
-                try:
-                    with open(os.path.join(os.getcwd(), "error.log"), "w", encoding="utf-8") as log:
-                        log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {request.code}\n")
-                        log.write(tb_lines)
-                except Exception:
-                    pass
-                # Show detailed error in panel history
-                err_detail = f"{type(e).__name__}: {e}"
-                result = FetchResult(
-                    code=request.code,
-                    status="error",
-                    period=request.period,
-                    message=f"内部错误: {err_detail}",
-                )
-                self._add_history(result)
-                self._notify("处理失败", f"{request.code}: {err_detail}")
-
-            self._fetching.clear()
-            self._signal_status("monitoring")
+        self._fetching.clear()
+        self._signal_status("monitoring")
 
     def _process_request(self, request: StockRequest) -> None:
         """Process a single stock fetch request.
@@ -502,8 +489,8 @@ class StockClipper:
             FetchResult for the operation.
         """
         request = StockRequest(code=code, period=period, save_mode=False, raw=code)
-        try:
-            self._fetch_queue.put_nowait(request)
-        except queue.Full:
-            return FetchResult(code=code, status="error", message="队列已满，请稍后重试")
+        if self._fetch_pool:
+            self._fetch_pool.submit(self._fetch_with_status, request)
+        else:
+            return FetchResult(code=code, status="error", message="服务未启动")
         return FetchResult(code=code, status="pending", period=period, message="已加入队列")
