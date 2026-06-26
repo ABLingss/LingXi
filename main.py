@@ -39,90 +39,86 @@ log = get_logger("main")
 
 
 def run_cli(args) -> None:
-    """CLI mode: fetch a single stock code and output JSON to stdout or file."""
-    from api.client import fetch_kline, fetch_stock_info, StockError
-    from data.builder import build_json, to_json_string
-    from core.clipboard import parse_clipboard
+    """CLI mode: fetch stock data via stock-api npx."""
+    import subprocess, json as _json
 
-    # Parse code with optional prefixes
-    raw_code = args.code.strip()
-    request = parse_clipboard(raw_code)
+    code = args.code.strip()
+    period = args.period
+    count = args.count if args.count is not None else 250
 
-    if request is None:
-        print(f"Error: Invalid stock code '{raw_code}'. Must be 6 digits.")
-        print("Supported formats: 000001, #000001, W:000001, M:000001")
-        sys.exit(1)
+    # Convert to stock-api code format
+    if not code.startswith(("SH", "SZ", "HK", "US")):
+        if code.startswith(("60", "68")):
+            code = f"SH{code}"
+        else:
+            code = f"SZ{code}"
 
-    code = request.code
-    period = request.period
+    period_map = {"daily": "day", "weekly": "week", "monthly": "month",
+                  "1min": "day", "5min": "day", "15min": "day", "30min": "day", "60min": "day"}
+    sp = period_map.get(period, "day")
 
-    # Override period if explicitly provided
-    if args.period != "daily":
-        period = args.period
-
-    cfg = load_config()
-    count = args.count if args.count is not None else cfg["default_count"]
-    timeout = cfg.get("request_timeout", 5)
-
-    print("📈 Stock JSON Clipper V2.1 (CLI)")
+    print(f"Stock JSON Clipper V3.0 (CLI)")
     print(f"   Code: {code}  |  Period: {period}  |  Count: {count}")
-    print(f"{'─' * 50}")
+    print(f"{'=' * 50}")
 
-    # Fetch
     try:
-        print("⏳ Fetching K-line data...")
-        kline_data = fetch_kline(code, period=period, count=count, timeout=timeout)
-        print(f"   ✅ Got {len(kline_data)} bars ({kline_data[0]['date']} ~ {kline_data[-1]['date']})")
+        print("Fetching via stock-api...")
+        result = subprocess.run(
+            ["npx", "-y", "stock-api", "get-klines", code, "--period", sp, "--count", str(count)],
+            capture_output=True, text=True, timeout=30, shell=True)
+        if result.returncode != 0:
+            print(f"Error: stock-api failed. Is Node.js >=18 installed?")
+            print(result.stderr[:500])
+            sys.exit(1)
+        kline_data = _json.loads(result.stdout)
+        if not isinstance(kline_data, list):
+            kline_data = kline_data.get("data", kline_data.get("klines", []))
 
-        print("⏳ Fetching stock info...")
-        stock_info = fetch_stock_info(code, timeout=timeout)
-        print(f"   ✅ {stock_info['name']} | {stock_info['industry']} | PE(TTM): {stock_info['pe_ttm']}")
+        # Also get stock info
+        result2 = subprocess.run(
+            ["npx", "-y", "stock-api", "get-stock", code],
+            capture_output=True, text=True, timeout=15, shell=True)
+        stock_info = _json.loads(result2.stdout) if result2.returncode == 0 else {"name": code}
 
-    except StockError as e:
-        print(f"❌ Error: {e.message}")
+        print(f"   Got {len(kline_data)} bars")
+
+    except FileNotFoundError:
+        print("Error: Node.js not found. Install Node.js >=18 or use the GUI panel.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
-    # Build JSON
-    print("⏳ Computing indicators & building JSON...")
-    result = build_json(kline_data, stock_info, code, period=period, count=count)
-    json_str = to_json_string(result)
+    # Compute indicators
+    from data.indicators import calc_all_indicators
+    from data.builder import build_summary, to_json_string
+    closes = [k.get("close", 0) for k in kline_data]
+    indicators = calc_all_indicators(closes)
+    summary_data = build_summary(kline_data)
 
-    # Output
+    meta = {
+        "code": code, "name": stock_info.get("name", code),
+        "market": "沪市" if code.startswith("SH") else "深市",
+        "period": period, "data_count": len(kline_data),
+        "start_date": kline_data[0].get("date", "") if kline_data else "",
+        "end_date": kline_data[-1].get("date", "") if kline_data else "",
+    }
+    result_json = {"meta": meta, "indicators": indicators, "summary": summary_data, "data": kline_data}
+    json_str = to_json_string(result_json)
+
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(json_str)
-        print(f"✅ Saved to {args.output}")
-    elif request.save_mode:
-        # #save mode: write to file, print path
-        import time
-        date_str = time.strftime("%Y%m%d")
-        safe_name = stock_info["name"].replace("/", "_").replace("\\", "_").replace(" ", "")
-        filename = f"{code}_{safe_name}_{date_str}.json"
-        filepath = os.path.join(os.getcwd(), filename)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(json_str)
-        print(f"✅ Saved to {filepath}")
+        print(f"Saved to {args.output}")
     else:
-        print(f"{'─' * 50}")
         print(json_str)
-
-    # Summary
-    print(f"\n{'─' * 50}")
-    print(f"📊 Summary:")
-    print(f"   Name: {result['meta']['name']}")
-    print(f"   Market: {result['meta']['market']}")
-    print(f"   Period Change: {result['summary']['period_change']}%")
-    print(f"   MA5: {result['indicators']['ma5']}  MA20: {result['indicators']['ma20']}")
-    macd = result['indicators']['macd']
-    print(f"   MACD: DIF={macd['dif']}  DEA={macd['dea']}  BAR={macd['bar']}")
-    print(f"   RSI(6): {result['indicators']['rsi_6']}  RSI(12): {result['indicators']['rsi_12']}")
 
 
 def run_tray(args) -> None:
     """Tray mode: launch the full system tray application."""
     from ui.tray import run_tray
 
-    print("📈 Stock JSON Clipper V2.1")
+    print("📈 Stock JSON Clipper V3.0")
     print("   Starting system tray mode...")
     print("   Copy a 6-digit stock code (e.g. 000001) in any application.")
     print("   Right-click the tray icon for options.")
@@ -162,10 +158,10 @@ def run_tray(args) -> None:
 def main() -> None:
     # Initialize logging early
     init_logging()
-    log.info("Stock JSON Clipper V2.1 starting")
+    log.info("Stock JSON Clipper V3.0 starting")
 
     parser = argparse.ArgumentParser(
-        description="Stock JSON Clipper V2.1 — A-share stock data to AI-ready JSON",
+        description="Stock JSON Clipper V3.0 — A-share stock data to AI-ready JSON",
     )
     parser.add_argument(
         "--code", "-c",
@@ -178,7 +174,7 @@ def main() -> None:
         "--period", "-p",
         type=str,
         default="daily",
-        choices=["daily", "weekly", "monthly"],
+        choices=["1min", "5min", "15min", "30min", "60min", "daily", "weekly", "monthly"],
         help="K-line period for CLI mode (default: daily).",
     )
     parser.add_argument(

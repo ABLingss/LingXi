@@ -1,5 +1,5 @@
 """
-formula_prompt.py — TDX formula → AI prompt converter for Stock JSON Clipper V2.0.
+formula_prompt.py — TDX formula → AI prompt converter for Stock JSON Clipper V3.0.
 
 Generates professional A-share technical analysis prompts with:
   - Multi-timeframe resonance analysis (日/周/月)
@@ -224,10 +224,15 @@ def generate_prompt(
     extracted = extract_indicators(formula)
 
     parts = [
-        f"# A股技术分析任务",
+        f"# 股票技术分析任务 (Powered by stock-api)",
         "",
-        f"你是一位专业的A股量化分析师。请对 **{stock_code} {stock_name}** 进行全面的技术分析，",
-        f"并根据以下选股公式逐条判断条件是否满足。",
+        f"你是一位专业的量化分析师。以下是 **{stock_code} {stock_name}** 的实时技术数据，",
+        f"请结合选股公式逐条判断条件是否满足。",
+        "",
+        "> 数据来源: stock-api 自动灾备 (腾讯/新浪/东财)。如需更多数据，可使用以下命令：",
+        f"> `npx stock-api get-stock {stock_code}` — 实时行情",
+        f"> `npx stock-api get-klines {stock_code} --period day --count 250` — 日K线",
+        f"> `npx stock-api search-stocks <关键词>` — 搜索股票代码",
         "",
         "---",
         "",

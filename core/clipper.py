@@ -1,499 +1,56 @@
 """
-core.clipper — Core orchestrator for Stock JSON Clipper V2.1.
+core.clipper — Core orchestrator for Stock JSON Clipper V3.0.
 
-Ties together clipboard monitoring, API fetching, indicator calculation,
-JSON assembly, cache management, file saving, and UI notifications.
-
-Threading:
-  - Main thread: runs the tray (pystray) event loop
-  - Clipboard thread: polls clipboard every 0.5s
-  - Fetch worker thread: processes one fetch request at a time from a queue
-
-Communication between threads via queue.Queue.
+Data fetching is handled by stock-api (browser bundle) in the panel.
+Python side manages: config, cache, module registry, file I/O, tray.
 """
 
 import json
 import os
-import queue
-import threading
 import time
-from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
-from api.client import fetch_kline, fetch_stock_info, StockError
 from core.cache import CacheManager
-from core.clipboard import ClipboardMonitor, StockRequest
 from core.config import load_config, update_config
-from core.logging_setup import get_logger
 from core.registry import ModuleRegistry
-from data.builder import build_json, to_json_string
-
-log = get_logger("clipper")
-
-
-# --- Fetch result for panel logging ---
-class FetchResult:
-    """Result of a single stock fetch operation for display in the info panel."""
-
-    __slots__ = ("timestamp", "code", "name", "status", "period", "count", "message", "cache_key")
-
-    def __init__(
-        self,
-        code: str,
-        name: str = "",
-        status: str = "pending",
-        period: str = "daily",
-        count: int = 0,
-        message: str = "",
-        cache_key: str = "",
-    ) -> None:
-        self.timestamp = time.strftime("%H:%M:%S")
-        self.code = code
-        self.name = name
-        self.status = status  # 'success', 'error', 'cached', 'pending'
-        self.period = period
-        self.count = count
-        self.message = message
-        self.cache_key = cache_key  # exact cache key used for this result
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "time": self.timestamp,
-            "code": self.code,
-            "name": self.name,
-            "status": self.status,
-            "period": self.period,
-            "count": self.count,
-            "message": self.message,
-        }
 
 
 class StockClipper:
-    """Core orchestrator for the Stock JSON Clipper application.
-
-    Usage:
-        clipper = StockClipper()
-        clipper.start()      # starts clipboard monitor + fetch worker
-        clipper.run_tray()   # blocks on pystray main loop
-        clipper.stop()       # graceful shutdown
-    """
-
-    MAX_HISTORY = 5
-    DEDUP_SECONDS = 3.0  # minimum interval between identical code+period requests
+    """Minimal orchestrator — data comes from JS/stock-api."""
 
     def __init__(self, config_path: Optional[str] = None) -> None:
-        """Initialize the clipper.
-
-        Args:
-            config_path: Optional path to config.ini.
-        """
         self._config_path = config_path
         self._config = load_config(config_path) if config_path else load_config()
-
-        # Module registry (for pluggable feature modules)
         self.registry = ModuleRegistry()
-
-        # Cache
         self._cache = CacheManager(ttl=self._config.get("cache_ttl", 300.0))
 
-        # Rate limiting: track last fetch time per (code, period)
-        self._last_fetch_time: Dict[str, float] = {}
-        self._dedup_lock = threading.Lock()
-
-        # Simple fetch queue + single worker thread
-        self._fetch_queue: queue.Queue = queue.Queue()
-        self._fetch_thread: Optional[threading.Thread] = None
-
-        # History
-        self._history: deque = deque(maxlen=self.MAX_HISTORY)
-        self._history_lock = threading.Lock()
-
-        # Threads
-        self._clipboard_monitor: Optional[ClipboardMonitor] = None
-
-        # Callbacks for UI
-        self._on_notification: Optional[Callable[[str, str], None]] = None
-        self._on_status_change: Optional[Callable[[str], None]] = None
-
-        # State
-        self._running = threading.Event()
-        self._fetching = threading.Event()
-        self._last_result: Optional[FetchResult] = None
-
-    # --- Public API ---
-
     def start(self) -> None:
-        """Start the background threads (clipboard monitor + fetch pool)."""
-        if self._running.is_set():
-            return
-
-        self._running.set()
-
-        # Start module lifecycle
         self.registry.start_all()
 
-        # Start simple fetch worker
-        self._fetch_thread = threading.Thread(
-            target=self._fetch_worker, daemon=True, name="fetch-worker")
-        self._fetch_thread.start()
-
-        # Start clipboard monitor
-        self._clipboard_monitor = ClipboardMonitor(
-            on_detected=self._on_stock_detected,
-            poll_interval=self._config.get("poll_interval", 0.5),
-        )
-        self._clipboard_monitor.start()
-
     def stop(self) -> None:
-        """Gracefully stop all background threads."""
-        self._running.clear()
-
-        # Stop module lifecycle
         self.registry.stop_all()
 
-        if self._clipboard_monitor:
-            self._clipboard_monitor.stop()
-
-        # Stop fetch worker
-        try:
-            self._fetch_queue.put_nowait(None)  # sentinel
-        except queue.Full:
-            pass
-        if self._fetch_thread:
-            self._fetch_thread.join(timeout=3.0)
-
     def run_tray(self, auto_show_panel: bool = True) -> None:
-        """Run the system tray (blocking). Imported here to avoid circular deps."""
         from ui.tray import run_tray
         run_tray(self, auto_show_panel=auto_show_panel)
 
-    # --- Callback registration ---
-
-    def set_notification_callback(self, cb: Callable[[str, str], None]) -> None:
-        """Set callback for tray notifications: cb(title, message)."""
-        self._on_notification = cb
-
-    def set_status_callback(self, cb: Callable[[str], None]) -> None:
-        """Set callback for status changes: cb(status_text)."""
-        self._on_status_change = cb
-
-    # --- Core logic ---
-
-    def _on_stock_detected(self, request: StockRequest) -> None:
-        """Called by clipboard monitor when a stock code is detected.
-
-        Args:
-            request: Parsed StockRequest from clipboard.
-        """
-        # Rate limiting: skip if same code+period was requested recently
-        dedup_key = f"{request.code}_{request.period}"
-        now = time.time()
-        with self._dedup_lock:
-            last = self._last_fetch_time.get(dedup_key, 0)
-            if now - last < self.DEDUP_SECONDS:
-                return  # too soon, skip
-            self._last_fetch_time[dedup_key] = now
-
-        # Push to fetch queue
-        try:
-            self._fetch_queue.put_nowait(request)
-        except queue.Full:
-            pass
-
-    def _fetch_worker(self) -> None:
-        """Simple single-thread fetch worker loop."""
-        while self._running.is_set():
-            try:
-                request = self._fetch_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if request is None:  # sentinel
-                break
-
-            self._fetching.set()
-            self._signal_status("fetching")
-            try:
-                self._process_request(request)
-            except Exception as e:
-                log.error("Fetch failed for %s: %s", request.code, e)
-                result = FetchResult(
-                    code=request.code, status="error",
-                    period=request.period,
-                    message=f"内部错误: {type(e).__name__}: {e}")
-                self._add_history(result)
-                self._notify("处理失败", f"{request.code}: {e}")
-            self._fetching.clear()
-            self._signal_status("monitoring")
-
-    def _process_request(self, request: StockRequest) -> None:
-        """Process a single stock fetch request.
-
-        Args:
-            request: StockRequest to process.
-        """
-        # 1. Check cache (key includes period + count to avoid mismatch)
-        count = self._config.get("default_count", 250)
-        cache_key = self._cache.make_key(request.code, request.period, count)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            # Cached hit — write cached JSON to clipboard, #save mode writes fresh
-            if not request.save_mode:
-                self._write_clipboard(cached)
-                result = FetchResult(
-                    code=request.code,
-                    name=json.loads(cached)["meta"]["name"],
-                    status="cached",
-                    period=request.period,
-                    message="从缓存返回",
-                )
-                self._add_history(result)
-                self._notify(
-                    "✅ 缓存命中",
-                    f"{request.code} 已从缓存复制到剪贴板",
-                )
-                return
-            else:
-                # #save mode: clear cache and re-fetch full data
-                self._cache.remove(cache_key)
-
-        # 2. Fetch data
-        try:
-            kline_data = fetch_kline(
-                request.code,
-                period=request.period,
-                count=count,
-                timeout=self._config.get("request_timeout", 5),
-            )
-            stock_info = fetch_stock_info(
-                request.code,
-                timeout=self._config.get("request_timeout", 5),
-            )
-        except StockError as e:
-            self._write_clipboard(f"Error: {e.message}")
-            result = FetchResult(
-                code=request.code,
-                status="error",
-                period=request.period,
-                message=e.message,
-            )
-            self._add_history(result)
-            self._notify("❌ 拉取失败", f"{request.code}: {e.message}")
-            return
-
-        # 3. Build JSON
-        result_json = build_json(kline_data, stock_info, request.code, period=request.period, count=count)
-        json_str = to_json_string(result_json)
-
-        # 4. Save or clipboard
-        if request.save_mode:
-            # Save to file
-            filepath = self._save_to_file(request.code, stock_info["name"], json_str)
-            self._write_clipboard(filepath)
-            result = FetchResult(
-                code=request.code,
-                name=stock_info["name"],
-                status="success",
-                period=request.period,
-                count=len(kline_data),
-                message=f"已保存: {os.path.basename(filepath)}",
-            )
-            self._notify("💾 已保存", f"{request.code} {stock_info['name']} → {os.path.basename(filepath)}")
-        else:
-            # Write to clipboard
-            self._write_clipboard(json_str)
-            # Cache the result
-            self._cache.set(cache_key, json_str)
-            result = FetchResult(
-                code=request.code,
-                name=stock_info["name"],
-                status="success",
-                period=request.period,
-                count=len(kline_data),
-                cache_key=cache_key,
-                message=f"{len(kline_data)}条数据",
-            )
-            self._notify(
-                "✅ 已完成",
-                f"{request.code} {stock_info['name']} ({len(kline_data)}条) → 剪贴板",
-            )
-
-        self._add_history(result)
-        self._last_result = result
-
-    def _write_clipboard(self, text: str) -> None:
-        """Write text to system clipboard (thread-safe wrapper)."""
-        import pyperclip
-        for attempt in range(3):
-            try:
-                pyperclip.copy(text)
-                return
-            except Exception:
-                if attempt < 2:
-                    time.sleep(0.1)
-                else:
-                    raise
-
-    def _save_to_file(self, code: str, name: str, json_str: str) -> str:
-        """Save JSON to a local file.
-
-        Uses save_directory from config if set, otherwise current directory.
-        File naming: {code}_{name}_{date}.json
-
-        Args:
-            code: 6-digit stock code.
-            name: Stock name.
-            json_str: JSON string to save.
-
-        Returns:
-            Absolute path of the saved file.
-        """
-        date_str = time.strftime("%Y%m%d")
-        # Sanitize filename
-        safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "")
-        filename = f"{code}_{safe_name}_{date_str}.json"
-
-        save_dir = self._config.get("save_directory", "")
-        if save_dir and os.path.isdir(save_dir):
-            filepath = os.path.join(save_dir, filename)
-        else:
-            filepath = os.path.join(os.getcwd(), filename)
-
-        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(json_str)
-
-        return os.path.abspath(filepath)
-
-    def _add_history(self, result: FetchResult) -> None:
-        """Add a fetch result to the history deque (thread-safe)."""
-        with self._history_lock:
-            self._history.appendleft(result)
-
-    def _notify(self, title: str, message: str) -> None:
-        """Send notification to tray (if callback registered)."""
-        if self._on_notification:
-            try:
-                self._on_notification(title, message)
-            except Exception:
-                pass
-
-    def _signal_status(self, status: str) -> None:
-        """Signal status change to panel (if callback registered)."""
-        if self._on_status_change:
-            try:
-                self._on_status_change(status)
-            except Exception:
-                pass
-
-    # --- Getters for UI panel ---
-
-    def get_history(self) -> List[Dict[str, Any]]:
-        """Get recent fetch history (max 5 items).
-
-        Returns:
-            List of result dicts, newest first.
-        """
-        with self._history_lock:
-            return [r.to_dict() for r in self._history]
-
+    # Config
     def get_config(self) -> Dict[str, Any]:
-        """Get current configuration."""
         return dict(self._config)
 
     def set_config(self, key: str, value: Any) -> None:
-        """Update a config value (persists to file)."""
         self._config[key] = value
         if self._config_path:
             update_config(key, value, self._config_path)
         else:
             update_config(key, value)
 
+    # Cache
     def clear_cache(self) -> None:
-        """Clear the in-memory cache."""
         self._cache.clear()
 
-    def toggle_clipboard_monitor(self) -> bool:
-        """Toggle clipboard monitoring on/off. Returns new state (True=monitoring)."""
-        if self._clipboard_monitor is None:
-            return False
-        if self._clipboard_monitor.is_paused:
-            self._clipboard_monitor.resume()
-            return True
-        else:
-            self._clipboard_monitor.pause()
-            return False
+    def cache_get(self, key: str) -> Optional[str]:
+        return self._cache.get(key)
 
-    def is_monitoring(self) -> bool:
-        """Check if clipboard monitoring is active."""
-        if self._clipboard_monitor is None:
-            return False
-        return not self._clipboard_monitor.is_paused
-
-    def get_status(self) -> str:
-        """Get current status ('monitoring' or 'fetching')."""
-        return "fetching" if self._fetching.is_set() else "monitoring"
-
-    def get_last_result(self) -> Optional[FetchResult]:
-        """Get the most recent fetch result."""
-        return self._last_result
-
-    def get_result_detail(self) -> Optional[Dict[str, Any]]:
-        """Get detailed info from the last fetch result for panel display.
-
-        Returns:
-            Dict with 'meta', 'indicators', 'summary' keys, or None if no data.
-        """
-        last = self._last_result
-        if last is None:
-            return None
-
-        # Use stored cache_key if available, otherwise try default count
-        cache_key = last.cache_key if last.cache_key else self._cache.make_key(
-            last.code, last.period, self._config.get("default_count", 250)
-        )
-        cached_json = self._cache.get(cache_key)
-        if cached_json:
-            try:
-                data = json.loads(cached_json)
-                return {
-                    "meta": data.get("meta", {}),
-                    "indicators": data.get("indicators", {}),
-                    "summary": data.get("summary", {}),
-                }
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback: try with any count (for data cached before cache_key fix)
-        if not last.cache_key:
-            for count in [250, 100, 50, 500, 1000]:
-                try_key = self._cache.make_key(last.code, last.period, count)
-                cached_json = self._cache.get(try_key)
-                if cached_json:
-                    try:
-                        data = json.loads(cached_json)
-                        return {
-                            "meta": data.get("meta", {}),
-                            "indicators": data.get("indicators", {}),
-                            "summary": data.get("summary", {}),
-                        }
-                    except json.JSONDecodeError:
-                        pass
-
-        return {
-            "meta": {
-                "code": last.code,
-                "name": last.name,
-                "period": last.period,
-            },
-            "indicators": {},
-            "summary": {},
-        }
-
-    def fetch_manual(self, code: str, period: str = "daily") -> FetchResult:
-        """Manually trigger a fetch (used by panel search box)."""
-        request = StockRequest(code=code, period=period, save_mode=False, raw=code)
-        try:
-            self._fetch_queue.put_nowait(request)
-        except queue.Full:
-            return FetchResult(code=code, status="error", message="队列已满")
-        return FetchResult(code=code, status="pending", period=period, message="已加入队列")
+    def cache_set(self, key: str, value: str) -> None:
+        self._cache.set(key, value)

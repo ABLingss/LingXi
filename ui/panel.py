@@ -1,5 +1,5 @@
 """
-web_panel.py — Info panel for Stock JSON Clipper V2.0.
+web_panel.py — Info panel for Stock JSON Clipper V3.0.
 
 Tahoe-inspired professional UI with full Chinese localization:
   - Every indicator label includes Chinese explanation
@@ -36,6 +36,7 @@ PANEL_HTML = r"""
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.jsdelivr.net/npm/stock-api/dist/browser/stock-api.iife.min.js"></script>
 <style>
   :root {
     --bg: #0b0e11;
@@ -476,7 +477,7 @@ PANEL_HTML = r"""
 <body>
 
 <div class="header">
-  <div class="logo">📈 Stock JSON Clipper<span class="ver">V2.1</span></div>
+  <div class="logo">📈 Stock JSON Clipper<span class="ver">V3.0</span></div>
   <div class="desc">A股数据桥梁 · 纯本地运行 · 一键生成AI分析JSON</div>
 </div>
 
@@ -489,7 +490,12 @@ PANEL_HTML = r"""
              maxlength="8" autofocus autocomplete="off">
     </div>
     <select id="searchPeriod">
-      <option value="daily">日线</option>
+      <option value="1min">1分</option>
+      <option value="5min">5分</option>
+      <option value="15min">15分</option>
+      <option value="30min">30分</option>
+      <option value="60min">60分</option>
+      <option value="daily" selected>日线</option>
       <option value="weekly">周线</option>
       <option value="monthly">月线</option>
     </select>
@@ -535,6 +541,7 @@ PANEL_HTML = r"""
       <div class="meta-tags" id="rcMeta"></div>
 
       <!-- Indicators -->
+      <div id="chartContainer" style="margin-bottom:10px;overflow-x:auto;"></div>
       <table class="ind-table" id="rcIndicators"></table>
 
       <div class="card-actions">
@@ -661,7 +668,7 @@ PANEL_HTML = r"""
 </div>
 
 <div class="toast" id="toast"></div>
-<div class="footer">Stock JSON Clipper V2.1 · GPL-3.0 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
+<div class="footer">Stock JSON Clipper V3.0 · GPL-3.0 · 数据来源: 腾讯财经/新浪财经/东方财富</div>
 
 <script>
 // ============================================================
@@ -721,64 +728,117 @@ function onSearch() {
   var code = input.value.trim();
   if (!code) { showToast('请输入股票代码（6位数字）'); return; }
 
-  var digits = code.replace(/[#WM:]/g, '');
-  if (!/^\d{6}$/.test(digits)) {
-    showToast('请输入有效的6位数字股票代码，例如 000001');
-    return;
-  }
+function toStockApiCode(raw) {
+  var c = raw.trim().toUpperCase().replace(/[#WM:]/g, '');
+  // Already has prefix
+  if (/^(SH|SZ|HK|US)/.test(c)) return c;
+  // 6-digit A-share: detect market
+  if (/^\d{6}$/.test(c)) return (c.startsWith('60') || c.startsWith('68')) ? 'SH' + c : 'SZ' + c;
+  // 5-digit HK stock
+  if (/^\d{5}$/.test(c)) return 'HK' + c;
+  return null;
+}
+
+function onSearch() {
+  var input = document.getElementById('searchInput');
+  var raw = input.value.trim();
+  if (!raw) { showToast('请输入股票代码'); return; }
+
+  var code = toStockApiCode(raw);
+  if (!code) { showToast('无效代码，支持: 000001 / SH600519 / HK00700'); return; }
 
   var period = document.getElementById('searchPeriod').value;
-  var saveMode = document.getElementById('searchSave').checked;
   var btn = document.getElementById('searchBtn');
-  btn.disabled = true;
-  btn.textContent = '查询中…';
+  btn.disabled = true; btn.textContent = '查询中…';
+  var dot = document.getElementById('statusDot');
+  dot.className = 'status-dot fetching';
+  document.getElementById('statusText').textContent = '正在拉取 ' + code + '…';
 
-  document.getElementById('statusDot').className = 'status-dot fetching';
-  document.getElementById('statusText').textContent = '正在拉取 ' + code + ' 的数据…';
-  window._pollFast = true;
+  // stock-api period mapping
+  var sp = {daily:'day', weekly:'week', monthly:'month'};
+  var kp = sp[period] || 'day';
 
-  pywebview.api.search_stock(code, period, saveMode).then(function(res) {
-    if (res && res.success) {
-      showToast('已加入查询队列: ' + code + '（数据源: 腾讯财经→新浪财经→东方财富 自动切换）');
-      fastPollResult(0);
-    } else {
-      var errMsg = (res && res.error ? res.error : '未知错误');
-      var errDetail = (res && res.detail ? res.detail : '');
-      showToast('查询失败: ' + errMsg);
-      window._showError('查询失败 ' + code, errMsg + (errDetail ? '\n\n' + errDetail : ''));
-      btn.disabled = false;
-      btn.textContent = '查询';
-      window._pollFast = false;
-    }
+  Promise.all([
+    StockApi.stocks.auto.getKlines(code, {period: kp, count: 250}),
+    StockApi.stocks.auto.getStock(code)
+  ]).then(function(results) {
+    var klines = results[0], stock = results[1];
+    // Send to Python for indicator calculation
+    pywebview.api.compute_indicators(code, klines, {
+      name: stock.name, now: stock.now, percent: stock.percent,
+      high: stock.high, low: stock.low, yesterday: stock.yesterday,
+      source: stock.source
+    }).then(function(detail) {
+      window._currentResult = detail;
+      renderResultCard(detail);
+      renderChart(klines, period);
+      document.getElementById('statusText').textContent = code + ' ' + stock.name + ' | 数据源: ' + (stock.source || 'auto');
+      dot.className = 'status-dot on';
+      btn.disabled = false; btn.textContent = '查询';
+      showToast('已加载 ' + klines.length + ' 条K线');
+    }).catch(function(e) {
+      window._showError('计算失败', String(e));
+      btn.disabled = false; btn.textContent = '查询';
+      dot.className = 'status-dot on';
+    });
   }).catch(function(e) {
-    showToast('内部错误，请重试');
-    window._showError('通信错误', '与后端API通信失败。请确认程序完整运行。\n' + (e && e.message ? e.message : String(e)));
-    btn.disabled = false;
-    btn.textContent = '查询';
-    window._pollFast = false;
+    window._showError('查询失败', (e && e.message) || String(e));
+    btn.disabled = false; btn.textContent = '查询';
+    dot.className = 'status-dot on';
+    document.getElementById('statusText').textContent = '查询失败 — 请检查代码或网络';
   });
 }
 
-function fastPollResult(count) {
-  if (count > 30) {
-    window._pollFast = false;
-    document.getElementById('searchBtn').disabled = false;
-    document.getElementById('searchBtn').textContent = '查询';
-    return;
+// ============================================================
+// SVG K-line Chart
+// ============================================================
+function renderChart(klines, period) {
+  var container = document.getElementById('chartContainer');
+  if (!container) return;
+  if (!klines || klines.length < 2) { container.innerHTML = ''; return; }
+
+  var W = container.clientWidth - 20, H = 220, barW = Math.max(1, Math.floor(W / klines.length * 0.7));
+  var volH = 50, priceH = H - volH - 20, gap = 5;
+
+  var highs = klines.map(function(k){return k.high;});
+  var lows = klines.map(function(k){return k.low;});
+  var vols = klines.map(function(k){return k.volume||0;});
+  var maxP = Math.max.apply(null, highs), minP = Math.min.apply(null, lows);
+  var maxV = Math.max.apply(null, vols) || 1;
+  var pRange = maxP - minP || 1;
+
+  var svg = '<svg width=\"' + (W+20) + '\" height=\"' + H + '\" style=\"display:block;\">';
+  // Grid lines
+  for (var i = 0; i <= 4; i++) {
+    var y = 5 + (priceH * i / 4);
+    var price = maxP - (pRange * i / 4);
+    svg += '<line x1=\"0\" y1=\"' + y + '\" x2=\"' + (W+10) + '\" y2=\"' + y + '\" stroke=\"var(--border)\" stroke-width=\"0.5\"/>';
+    svg += '<text x=\"' + (W+12) + '\" y=\"' + (y+4) + '\" fill=\"var(--text3)\" font-size=\"9\" font-family=\"var(--font-mono)\">' + price.toFixed(2) + '</text>';
   }
-  pywebview.api.get_last_result_detail().then(function(detail) {
-    if (detail && detail.meta && detail.meta.code) {
-      window._currentResult = detail;
-      renderResultCard(detail);
-      document.getElementById('searchBtn').disabled = false;
-      document.getElementById('searchBtn').textContent = '查询';
-      window._pollFast = false;
-    } else {
-      setTimeout(function() { fastPollResult(count + 1); }, 200);
-    }
-  }).catch(function() {
-    setTimeout(function() { fastPollResult(count + 1); }, 200);
-  });
+  // Candlesticks + volume
+  for (var i = 0; i < klines.length; i++) {
+    var k = klines[i];
+    var x = 10 + i * Math.floor(W / klines.length) + Math.floor((W/klines.length - barW)/2);
+    var openY = 5 + (maxP - k.open) / pRange * priceH;
+    var closeY = 5 + (maxP - k.close) / pRange * priceH;
+    var highY = 5 + (maxP - k.high) / pRange * priceH;
+    var lowY = 5 + (maxP - k.low) / pRange * priceH;
+    var color = k.close >= k.open ? 'var(--red)' : 'var(--green)';
+    // Wick
+    svg += '<line x1=\"' + (x+barW/2) + '\" y1=\"' + highY + '\" x2=\"' + (x+barW/2) + '\" y2=\"' + lowY + '\" stroke=\"' + color + '\" stroke-width=\"1\"/>';
+    // Body
+    var bodyTop = Math.min(openY, closeY), bodyH = Math.max(Math.abs(closeY - openY), 1);
+    svg += '<rect x=\"' + x + '\" y=\"' + bodyTop + '\" width=\"' + barW + '\" height=\"' + bodyH + '\" fill=\"' + color + '\"/>';
+    // Volume
+    var vh = (k.volume || 0) / maxV * volH;
+    svg += '<rect x=\"' + x + '\" y=\"' + (priceH + gap + volH - vh) + '\" width=\"' + barW + '\" height=\"' + vh + '\" fill=\"' + color + '\" opacity=\"0.3\"/>';
+  }
+  // Labels
+  var first = klines[0], last = klines[klines.length-1];
+  svg += '<text x=\"10\" y=\"' + (H-5) + '\" fill=\"var(--text3)\" font-size=\"9\">' + (first.date||'') + '</text>';
+  svg += '<text x=\"' + (W-30) + '\" y=\"' + (H-5) + '\" fill=\"var(--text3)\" font-size=\"9\" text-anchor=\"end\">' + (last.date||'') + '</text>';
+  svg += '</svg>';
+  container.innerHTML = svg;
 }
 
 document.getElementById('searchInput').addEventListener('keydown', function(e) {
@@ -1206,6 +1266,33 @@ class PanelAPI:
         """Diagnostic: verify JS↔Python bridge works."""
         return "pong"
 
+    def compute_indicators(self, code: str, klines: List[Dict], stock_info: Dict) -> Dict[str, Any]:
+        """JS→Python: compute technical indicators from stock-api kline data."""
+        from data.indicators import calc_all_indicators
+        from data.builder import build_summary
+        from api.client import _market_label
+
+        closes = [k.get("close", 0) for k in klines]
+        indicators = calc_all_indicators(closes)
+        summary = build_summary(klines)
+
+        return {
+            "meta": {
+                "code": code,
+                "name": stock_info.get("name", ""),
+                "market": _market_label(code.replace("SH","").replace("SZ","").replace("HK","") or "000001"),
+                "industry": "",
+                "pe_ttm": -1,
+                "total_mv": -1,
+                "period": "daily",
+                "data_count": len(klines),
+                "start_date": klines[0].get("date", "") if klines else "",
+                "end_date": klines[-1].get("date", "") if klines else "",
+            },
+            "indicators": indicators,
+            "summary": summary,
+        }
+
     def get_history(self) -> List[Dict[str, Any]]:
         return self._clipper.get_history()
 
@@ -1343,7 +1430,7 @@ def show_panel(clipper: "StockClipper") -> None:
         api = PanelAPI(clipper)
 
         _panel_window = webview.create_window(
-            title="Stock JSON Clipper V2.1",
+            title="Stock JSON Clipper V3.0",
             html=PANEL_HTML,
             width=560,
             height=760,

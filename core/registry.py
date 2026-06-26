@@ -1,5 +1,5 @@
 """
-core.registry — Module registration system for Stock JSON Clipper V2.1.
+core.registry — Module registration system for Stock JSON Clipper V3.0.
 
 Provides:
   - BaseModule: Abstract base for all pluggable feature modules
