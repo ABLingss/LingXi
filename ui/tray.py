@@ -142,17 +142,23 @@ def run_tray(clipper: "StockClipper", auto_show_panel: bool = True) -> None:
 
     clipper.set_notification_callback(notify_cb)
 
-    # Auto-show panel on startup (after tray is ready)
+    # Auto-show panel on startup
     if auto_show_panel:
-        icon.notify("正在启动面板...", title="Stock JSON Clipper")
         def _show_panel_later():
-            import time as _time
+            import time as _time, traceback, sys
             _time.sleep(0.3)
             try:
                 from ui.panel import show_panel
                 show_panel(clipper)
-            except Exception:
-                icon.notify("面板启动失败，请右键菜单手动打开", title="Stock JSON Clipper")
+            except Exception as e:
+                # Log the real error so user can see what went wrong
+                err = f"{type(e).__name__}: {e}"
+                try:
+                    from core.logging_setup import get_logger
+                    get_logger("tray").error("Panel startup failed: %s", err)
+                except Exception:
+                    pass
+                icon.notify(f"面板启动失败: {err}", title="Stock JSON Clipper")
         threading.Thread(target=_show_panel_later, daemon=True).start()
 
     # Run the tray (blocking)

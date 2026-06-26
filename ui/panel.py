@@ -1233,4 +1233,17 @@ def show_panel(clipper: "StockClipper") -> None:
             _panel_window = None
 
         _panel_window.events.closed += _on_closed
-        webview.start(gui=None, debug=False)
+
+        # Pick GUI backend: Windows → edgechromium, Linux → gtk
+        import sys as _sys
+        gui = None
+        if _sys.platform == "win32":
+            gui = "edgechromium"
+        elif _sys.platform == "linux":
+            gui = "gtk"
+
+        try:
+            webview.start(gui=gui, debug=False)
+        except Exception:
+            # Fallback: let pywebview auto-detect
+            webview.start(gui=None, debug=False)
